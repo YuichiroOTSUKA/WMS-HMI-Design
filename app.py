@@ -239,7 +239,9 @@ def overview_building_svg(
 
     svg_parts = []
     svg_parts.append(f"""
-<svg width="100%" height="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">
+<svg width="100%" height="100%" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet"
+     xmlns="http://www.w3.org/2000/svg">
+
   <defs>
     <linearGradient id="bggrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#0b1220" stop-opacity="1"/>
@@ -539,7 +541,33 @@ svg_overview = overview_building_svg(
 )
 
 # IMPORTANT: render SVG in an iframe to avoid sanitization
-components.html(svg_overview, height=460, scrolling=False)
+html_overview = f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body {{
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      overflow: hidden;
+      height: 100%;
+      width: 100%;
+    }}
+    svg {{
+      display: block;
+      width: 100%;
+      height: 100%;
+    }}
+  </style>
+</head>
+<body>
+  {svg_overview}
+</body>
+</html>
+"""
+components.html(html_overview, height=430, scrolling=False)
 
 sel = st.radio(
     "Select gate",
