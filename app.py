@@ -202,6 +202,44 @@ def compute_h_plan_from_qplan(q_plan: float):
     return round(1.10 + 0.06 * (q_plan - 10.0), 2)
 
 # =========================
+# Remote Program Catalog (dummy)
+# =========================
+PROGRAMS = {
+    "P-01 Dry / Standard": {
+        "season": "Dry",
+        "pattern": "A",
+        "q_plan_bias": +0.00,          # m3/s (applied slowly if enabled)
+        "target_open_base": 45,        # %
+        "target_open_gain": 2.0,       # % per (Q_plan-10)
+        "desc": "Dry season standard distribution program.",
+    },
+    "P-02 Dry / High Demand": {
+        "season": "Dry",
+        "pattern": "B",
+        "q_plan_bias": +0.80,
+        "target_open_base": 55,
+        "target_open_gain": 2.5,
+        "desc": "Dry season high-demand program (higher Q target).",
+    },
+    "P-03 Wet / Conservation": {
+        "season": "Wet",
+        "pattern": "C",
+        "q_plan_bias": -0.50,
+        "target_open_base": 35,
+        "target_open_gain": 1.6,
+        "desc": "Wet season conservation program (lower Q target).",
+    },
+    "P-04 Maintenance / Safe Hold": {
+        "season": "Dry",
+        "pattern": "HOLD",
+        "q_plan_bias": -999.0,         # special: do not modify Q_plan
+        "target_open_base": 0,
+        "target_open_gain": 0.0,
+        "desc": "Maintenance hold (no automatic movement).",
+    },
+}
+
+# =========================
 # SVG: Building + multi-gate overview (NO external images)
 # =========================
 def overview_building_svg(
@@ -370,6 +408,11 @@ def init_state():
 
     if "cctv_camera" not in ss: ss.cctv_camera = "CCTV — Gate Area"
 
+    # Remote Program state
+    if "program_name" not in ss: ss.program_name = "P-01 Dry / Standard"
+    if "program_running" not in ss: ss.program_running = False
+    if "program_last_applied" not in ss: ss.program_last_applied = "—"
+
     if "gate_state" not in ss:
         gs = {}
         for stn, dirs in ASSETS.items():
@@ -445,7 +488,44 @@ def tick_signals():
     ss.trend_gate = (ss.trend_gate + [open_pct])[-120:]
     ss.trend_q = (ss.trend_q + [ss.q_actual])[-120:]
 
+def apply_remote_program_control():
+    ss = st.session_state
+    if ss.mode != "REMOTE PROGRAM":
+        return
+    if not ss.program_running:
+        return
+    if blocked():
+        ss.program_running = False
+        ss.control_cycle = "STOPPED"
+        return
+
+    prog = PROGRAMS.get(ss.program_name)
+    if not prog:
+        return
+
+    # Update screen labels from program
+    ss.season = prog["season"]
+    ss.pattern = prog["pattern"]
+
+    # Optional: slowly bias Q_plan (dummy). HOLD does not modify Q_plan.
+    if prog["q_plan_bias"] > -900:
+        ss.q_plan = round(max(5.0, min(20.0, ss.q_plan + prog["q_plan_bias"] * 0.01)), 2)
+
+    # Target opening derived from Q_plan (dummy)
+    target = int(prog["target_open_base"] + prog["target_open_gain"] * (ss.q_plan - 10.0))
+    target = max(0, min(100, target))
+
+    # HOLD means no movement
+    if prog["pattern"] == "HOLD":
+        ss.program_last_applied = datetime.now().strftime("%H:%M:%S")
+        return
+
+    step_gate_toward(target)
+    ss.program_last_applied = datetime.now().strftime("%H:%M:%S")
+
+# Run one tick per page render
 tick_signals()
+apply_remote_program_control()
 
 # =========================
 # Sidebar
@@ -467,7 +547,26 @@ st.sidebar.radio(
     key="mode"
 )
 
+# Remote Program UI (shown only in REMOTE PROGRAM mode)
 st.sidebar.markdown("---")
+if st.session_state.mode == "REMOTE PROGRAM":
+    st.sidebar.markdown("### Remote Program (dummy)")
+    st.sidebar.selectbox("Program", list(PROGRAMS.keys()), key="program_name")
+    p = PROGRAMS[st.session_state.program_name]
+    st.sidebar.caption(p["desc"])
+
+    colA, colB = st.sidebar.columns(2)
+    with colA:
+        if st.sidebar.button("▶ RUN", use_container_width=True, disabled=blocked()):
+            st.session_state.program_running = True
+            st.session_state.control_cycle = "RUNNING"
+            send_cmd(f"PROGRAM RUN: {st.session_state.program_name}")
+    with colB:
+        if st.sidebar.button("⏹ STOP", use_container_width=True):
+            st.session_state.program_running = False
+            st.session_state.control_cycle = "STOPPED"
+            send_cmd("PROGRAM STOP")
+
 st.sidebar.markdown("### Comms / Access (dummy)")
 st.session_state.remote_enabled = st.sidebar.checkbox("Remote enabled", value=st.session_state.remote_enabled)
 st.session_state.comm_main = st.sidebar.selectbox("Main comm", ["NORMAL", "DOWN"], index=["NORMAL","DOWN"].index(st.session_state.comm_main))
@@ -719,10 +818,34 @@ def panel_manual_command():
     card_end()
 
 def panel_program_control():
-    card_start("Program Control", "Pattern/Season selection (dummy).", "🧩")
-    row("Pattern", st.session_state.pattern)
-    row("Season", st.session_state.season)
-    row("Control state", st.session_state.control_cycle, None, "hmi-pill")
+    ss = st.session_state
+    prog = PROGRAMS.get(ss.program_name, None)
+
+    card_start("Program Control", "Select program and run/stop (dummy).", "🧩")
+
+    row("Program", ss.program_name)
+    if prog:
+        row("Description", prog["desc"])
+        row("Season (from program)", prog["season"])
+        row("Pattern (from program)", prog["pattern"])
+
+    row("Program state", "RUNNING" if ss.program_running else "STOPPED",
+        None, "hmi-ok" if ss.program_running else "hmi-bad"
+    )
+    row("Last applied", ss.program_last_applied)
+
+    b1, b2 = st.columns(2, gap="large")
+    with b1:
+        if st.button("▶ RUN (panel)", use_container_width=True, disabled=is_blocked):
+            ss.program_running = True
+            ss.control_cycle = "RUNNING"
+            send_cmd(f"PROGRAM RUN: {ss.program_name}")
+    with b2:
+        if st.button("⏹ STOP (panel)", use_container_width=True):
+            ss.program_running = False
+            ss.control_cycle = "STOPPED"
+            send_cmd("PROGRAM STOP")
+
     card_end()
 
 def panel_alarms():
