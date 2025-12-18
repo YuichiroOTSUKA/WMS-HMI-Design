@@ -4,7 +4,7 @@ from datetime import datetime
 import random
 import math
 
-st.set_page_config(page_title="TC/SPC HMI Demo (TS-aligned)", layout="wide")
+st.set_page_config(page_title="WMS HMI Demo (TS-aligned)", layout="wide")
 
 # =========================
 # UI / CSS
