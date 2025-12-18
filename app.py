@@ -64,21 +64,6 @@ small { color: #94a3b8; }
 .hmi-row .k{ color:#94a3b8; font-size:12px; font-weight:800; }
 .hmi-row .v{ font-size:16px; font-weight:900; }
 
-/* Gate tiles (overview) */
-.gate-tile{
-  background: rgba(11,18,32,0.92);
-  border: 1px solid #223049;
-  border-radius: 18px;
-  padding: 12px 12px;
-  box-shadow: 0 10px 28px rgba(0,0,0,0.25);
-}
-.gate-tile.sel{
-  border-color: #60a5fa;
-  box-shadow: 0 10px 34px rgba(59,130,246,0.25);
-}
-.gate-name{ font-weight: 900; font-size: 14px; margin-bottom: 6px; }
-.gate-mini{ color:#94a3b8; font-size: 12px; margin-bottom: 10px; }
-
 /* Simple bar */
 .bar-wrap{ height: 10px; border-radius: 999px; background:#0a1020; border:1px solid #223049; overflow:hidden; }
 .bar-fill{ height: 100%; border-radius: 999px; background: linear-gradient(90deg, #0ea5e9, #2563eb); }
@@ -122,6 +107,9 @@ small { color: #94a3b8; }
   font-size:11px;
   margin-top:4px;
 }
+
+/* Streamlit widgets tweak */
+div[data-testid="stRadio"] > label { color:#94a3b8; font-weight:800; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -164,43 +152,6 @@ display:flex;align-items:center;justify-content:center;">
         unsafe_allow_html=True,
     )
 
-def gate_svg(open_pct: int, opening_m: float):
-    """
-    NOTE: SVG内の「Opening xx%」「Opening x.xx m」の2行テキストは削除（ユーザー指示）。
-    """
-    y = 120 - int(open_pct * 0.8)
-    y = max(40, min(120, y))
-    return f"""
-<svg width="100%" viewBox="0 0 520 260" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="water" x1="0" x2="0" y1="0" y2="1">
-      <stop offset="0" stop-color="#0ea5e9" stop-opacity="0.92"/>
-      <stop offset="1" stop-color="#2563eb" stop-opacity="0.72"/>
-    </linearGradient>
-    <filter id="sh" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.35"/>
-    </filter>
-  </defs>
-
-  <rect x="22" y="20" width="476" height="220" rx="18" fill="#0b1220" stroke="#223049"/>
-
-  <rect x="150" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
-  <rect x="324" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
-
-  <rect x="80" y="170" width="360" height="44" rx="12" fill="#0a1020" stroke="#223049"/>
-  <rect x="92" y="182" width="336" height="30" rx="10" fill="url(#water)" opacity="0.95"/>
-
-  <rect x="220" y="62" width="80" height="140" rx="10" fill="#0a1020" stroke="#223049"/>
-
-  <g filter="url(#sh)">
-    <rect x="226" y="{y}" width="68" height="90" rx="10" fill="#1f6feb" opacity="0.92" stroke="#60a5fa"/>
-    <path d="M232 {y+18} H288" stroke="#93c5fd" stroke-width="3" opacity="0.75"/>
-    <path d="M232 {y+36} H288" stroke="#93c5fd" stroke-width="3" opacity="0.55"/>
-    <path d="M232 {y+54} H288" stroke="#93c5fd" stroke-width="3" opacity="0.40"/>
-  </g>
-</svg>
-"""
-
 def bar(percent: int):
     p = max(0, min(100, int(percent)))
     st.markdown(f"<div class='bar-wrap'><div class='bar-fill' style='width:{p}%;'></div></div>", unsafe_allow_html=True)
@@ -218,11 +169,6 @@ def dev_badge(abs_pct: float) -> str:
     return "hmi-bad"
 
 def diverging_bar(dev_pct: float, scale_pct: float = 10.0):
-    """
-    Diverging bar centered on target (Plan).
-    dev_pct: (Actual-Plan)/Plan*100
-    scale_pct: +/- scale_pct corresponds to full half-width.
-    """
     d = max(-scale_pct, min(scale_pct, dev_pct))
     half = abs(d) / scale_pct * 50.0  # 0..50
     if d >= 0:
@@ -248,9 +194,154 @@ def diverging_bar(dev_pct: float, scale_pct: float = 10.0):
 </div>
 """, unsafe_allow_html=True)
 
+def opening_m_from_pct(open_pct: int, max_open_m: float):
+    return round(max_open_m * (open_pct / 100.0), 2)
+
+def compute_h_plan_from_qplan(q_plan: float):
+    return round(1.10 + 0.06 * (q_plan - 10.0), 2)
+
+# =========================
+# SVG: Building + multi-gate overview (NO external images)
+# =========================
+def overview_building_svg(
+    station: str,
+    direction: str,
+    gates: list[str],
+    gate_states: dict,
+    selected_gate: str,
+    alarm_active: bool,
+):
+    """
+    Code-generated schematic:
+    - Simple building (roof + facade)
+    - Gate bays (one per gate)
+    - Each bay shows a stylized gate leaf and a water channel
+    - Opening % & Opening m shown under each bay
+    - Selected gate highlighted
+    """
+    n = max(1, len(gates))
+    W, H = 1100, 420
+    margin = 60
+    bay_gap = 14
+    bay_w = (W - 2*margin - (n-1)*bay_gap) / n
+    bay_h = 200
+    bay_y = 150
+
+    # building elements
+    roof_y = 40
+    facade_y = 90
+
+    # colors
+    stroke = "#223049"
+    card = "#0b1220"
+    panel = "#0a1020"
+    water1 = "#0ea5e9"
+    water2 = "#2563eb"
+    gate_fill = "#1f6feb"
+    gate_edge = "#60a5fa"
+    txt = "#e5e7eb"
+    sub = "#94a3b8"
+    warn = "#fbbf24"
+    bad = "#fb7185"
+    ok = "#34d399"
+
+    alarm_color = bad if alarm_active else ok
+
+    svg_parts = []
+    svg_parts.append(f"""
+<svg width="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bggrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1220" stop-opacity="1"/>
+      <stop offset="1" stop-color="#070b14" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="{water1}" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="{water2}" stop-opacity="0.75"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="{W}" height="{H}" rx="22" fill="url(#bggrad)" stroke="{stroke}"/>
+
+  <!-- Header strip -->
+  <text x="{margin}" y="32" fill="{txt}" font-size="18" font-weight="900">Gate Overview</text>
+  <text x="{margin}" y="55" fill="{sub}" font-size="12" font-weight="700">{station}  •  Direction: {direction}</text>
+
+  <!-- Building (simple) -->
+  <path d="M{margin} {facade_y} L{margin+120} {roof_y} H{W-margin-120} L{W-margin} {facade_y} Z"
+        fill="#111c2e" stroke="{stroke}" opacity="0.95"/>
+  <rect x="{margin+20}" y="{facade_y}" width="{W-2*margin-40}" height="80" rx="14" fill="#0f172a" stroke="{stroke}" opacity="0.95"/>
+
+  <!-- Alarm indicator -->
+  <circle cx="{W-margin-18}" cy="36" r="7" fill="{alarm_color}" opacity="0.9"/>
+  <text x="{W-margin-30}" y="55" fill="{sub}" font-size="11" font-weight="800" text-anchor="end">
+    {'ALARM' if alarm_active else 'NORMAL'}
+  </text>
+""")
+
+    for i, gname in enumerate(gates):
+        key = f"{station}/{direction}/{gname}"
+        gs = gate_states.get(key, None)
+        open_pct = gs["open_pct"] if gs else 0
+        max_m = gs["max_open_m"] if gs else 2.0
+        open_m = opening_m_from_pct(open_pct, max_m)
+
+        x = margin + i*(bay_w + bay_gap)
+        sel = (gname == selected_gate)
+
+        # Gate leaf vertical position (higher = more open)
+        # We'll move the leaf up when opening increases.
+        leaf_min_y = bay_y + 24
+        leaf_max_y = bay_y + 110
+        leaf_y = leaf_max_y - int((leaf_max_y - leaf_min_y) * (open_pct/100.0))
+
+        outline = "#60a5fa" if sel else stroke
+        glow = 'filter="url(#shadow)"' if sel else ''
+
+        # small status dot per gate
+        gate_dot = ok
+        if alarm_active:
+            gate_dot = bad
+
+        svg_parts.append(f"""
+  <!-- Bay {i+1} -->
+  <g {glow}>
+    <rect x="{x}" y="{bay_y}" width="{bay_w}" height="{bay_h}" rx="18" fill="{card}" stroke="{outline}" stroke-width="{2 if sel else 1}"/>
+    <!-- channel base -->
+    <rect x="{x+18}" y="{bay_y+128}" width="{bay_w-36}" height="46" rx="14" fill="{panel}" stroke="{stroke}"/>
+    <rect x="{x+26}" y="{bay_y+138}" width="{bay_w-52}" height="28" rx="12" fill="url(#water)" opacity="0.95"/>
+    <!-- gate frame -->
+    <rect x="{x+bay_w*0.36}" y="{bay_y+26}" width="{bay_w*0.28}" height="130" rx="12" fill="{panel}" stroke="{stroke}"/>
+    <!-- gate leaf -->
+    <rect x="{x+bay_w*0.36+6}" y="{leaf_y}" width="{bay_w*0.28-12}" height="70" rx="12" fill="{gate_fill}" stroke="{gate_edge}" opacity="0.92"/>
+    <path d="M{x+bay_w*0.36+12} {leaf_y+16} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.7"/>
+    <path d="M{x+bay_w*0.36+12} {leaf_y+34} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.5"/>
+    <path d="M{x+bay_w*0.36+12} {leaf_y+52} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.35"/>
+
+    <!-- gate label & status -->
+    <circle cx="{x+24}" cy="{bay_y+26}" r="6" fill="{gate_dot}" opacity="0.9"/>
+    <text x="{x+40}" y="{bay_y+30}" fill="{txt}" font-size="13" font-weight="900">{gname}</text>
+
+    <!-- numeric under bay -->
+    <text x="{x+bay_w/2}" y="{bay_y+bay_h+28}" fill="{txt}" font-size="13" font-weight="900" text-anchor="middle">{open_pct}%</text>
+    <text x="{x+bay_w/2}" y="{bay_y+bay_h+48}" fill="{sub}" font-size="12" font-weight="800" text-anchor="middle">{open_m:.2f} m</text>
+
+    <!-- mini bars under bay -->
+    <rect x="{x+bay_w*0.18}" y="{bay_y+bay_h+60}" width="{bay_w*0.64}" height="10" rx="999" fill="{panel}" stroke="{stroke}"/>
+    <rect x="{x+bay_w*0.18}" y="{bay_y+bay_h+60}" width="{bay_w*0.64*(open_pct/100.0)}" height="10" rx="999"
+          fill="url(#water)" opacity="0.95"/>
+  </g>
+""")
+
+    svg_parts.append("</svg>")
+    return "\n".join(svg_parts)
+
 # =========================
 # Data model (dummy)
-# Station -> Canal -> Gates
+# Station -> Direction -> Gates
 # =========================
 def build_demo_assets():
     return {
@@ -271,7 +362,7 @@ def init_state():
     ss = st.session_state
 
     if "station" not in ss: ss.station = "BBT15"
-    if "canal" not in ss: ss.canal = "BaratMainGate"
+    if "direction" not in ss: ss.direction = "BaratMainGate"
     if "mode" not in ss: ss.mode = "REMOTE AUTOMATIC"
     if "selected_gate" not in ss: ss.selected_gate = "Gate1"
 
@@ -302,23 +393,20 @@ def init_state():
     if "control_cycle" not in ss: ss.control_cycle = "STOPPED"  # RUNNING/PAUSED/STOPPED
     if "trend_large" not in ss: ss.trend_large = False
 
-    # CCTV selection (dummy)
     if "cctv_camera" not in ss: ss.cctv_camera = "CCTV — Gate Area"
 
     if "gate_state" not in ss:
         gs = {}
-        for stn, canals in ASSETS.items():
-            for c, gates in canals.items():
+        for stn, dirs in ASSETS.items():
+            for d, gates in dirs.items():
                 for g in gates:
-                    key = f"{stn}/{c}/{g}"
+                    key = f"{stn}/{d}/{g}"
                     open_pct = random.choice([0, 10, 25, 40, 55, 70, 85])
                     max_open_m = random.choice([2.00, 1.80, 1.60])
                     gs[key] = {
                         "open_pct": open_pct,
                         "max_open_m": max_open_m,
                         "motion": "STOP",
-                        "fully_open": open_pct >= 100,
-                        "fully_close": open_pct <= 0,
                         "last_cmd": "—",
                         "last_cmd_time": "—",
                     }
@@ -335,7 +423,7 @@ init_state()
 # =========================
 def current_gate_key():
     ss = st.session_state
-    return f"{ss.station}/{ss.canal}/{ss.selected_gate}"
+    return f"{ss.station}/{ss.direction}/{ss.selected_gate}"
 
 def get_gate():
     return st.session_state.gate_state[current_gate_key()]
@@ -363,22 +451,9 @@ def step_gate_toward(target_pct: int):
     p = gg["open_pct"]
     if p < target_pct:
         p = min(100, p + 2)
-        gg["motion"] = "OPENING"
     elif p > target_pct:
         p = max(0, p - 2)
-        gg["motion"] = "CLOSING"
-    else:
-        gg["motion"] = "STOP"
-
     gg["open_pct"] = p
-    gg["fully_open"] = (p >= 100)
-    gg["fully_close"] = (p <= 0)
-
-def opening_m_from_pct(open_pct: int, max_open_m: float):
-    return round(max_open_m * (open_pct / 100.0), 2)
-
-def compute_h_plan_from_qplan(q_plan: float):
-    return round(1.10 + 0.06 * (q_plan - 10.0), 2)
 
 def tick_signals():
     ss = st.session_state
@@ -405,10 +480,10 @@ st.sidebar.markdown("## WMS HMI Demo")
 stations = list(ASSETS.keys())
 st.sidebar.selectbox("Station", stations, key="station")
 
-canals = list(ASSETS[st.session_state.station].keys())
-if st.session_state.canal not in canals:
-    st.session_state.canal = canals[0]
-st.sidebar.selectbox("Canal / Direction", canals, key="canal")
+directions = list(ASSETS[st.session_state.station].keys())
+if st.session_state.direction not in directions:
+    st.session_state.direction = directions[0]
+st.sidebar.selectbox("Direction", directions, key="direction")
 
 st.sidebar.markdown("---")
 st.sidebar.radio(
@@ -446,7 +521,7 @@ auto_refresh = st.sidebar.checkbox("Auto refresh (1s)", value=False)
 mode = st.session_state.mode
 is_blocked = blocked()
 
-st.markdown(f"### {st.session_state.station}  ›  {st.session_state.canal}")
+st.markdown(f"### {st.session_state.station}  ›  Direction: {st.session_state.direction}")
 h1, h2, h3, h4 = st.columns([1.3, 1.3, 1.2, 1.2])
 with h1:
     pill(
@@ -464,35 +539,41 @@ with h4:
 st.markdown("")
 
 # =========================
-# Gate overview row
+# Gate Overview (NEW: code-generated building schematic)
 # =========================
-gates = ASSETS[st.session_state.station][st.session_state.canal]
+gates = ASSETS[st.session_state.station][st.session_state.direction]
 if st.session_state.selected_gate not in gates:
     st.session_state.selected_gate = gates[0]
 
-card_start("Gate Overview", "Selected canal gates aligned horizontally for quick situational awareness", "🗺️")
-cols = st.columns(len(gates), gap="large")
+alarm_active = any(st.session_state.prot.values())
 
-for i, gname in enumerate(gates):
-    with cols[i]:
-        key = f"{st.session_state.station}/{st.session_state.canal}/{gname}"
-        gs = st.session_state.gate_state[key]
-        open_pct = gs["open_pct"]
-        open_m = opening_m_from_pct(open_pct, gs["max_open_m"])
+card_start(
+    "Gate Overview",
+    "Code-generated schematic (no image files). Select a gate below to open detail panels.",
+    "🏛️"
+)
 
-        sel = (gname == st.session_state.selected_gate)
-        st.markdown(f"<div class='gate-tile {'sel' if sel else ''}'>", unsafe_allow_html=True)
-        st.markdown(f"<div class='gate-name'>🚪 {gname}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='gate-mini'>Motion: {gs['motion']} • Alarm: {'YES' if any(st.session_state.prot.values()) else 'NO'}</div>", unsafe_allow_html=True)
+svg = overview_building_svg(
+    station=st.session_state.station,
+    direction=st.session_state.direction,
+    gates=gates,
+    gate_states=st.session_state.gate_state,
+    selected_gate=st.session_state.selected_gate,
+    alarm_active=alarm_active,
+)
+st.markdown(svg, unsafe_allow_html=True)
 
-        bar(open_pct)
-        st.markdown(f"<div class='gate-mini'>% {open_pct}  •  m {open_m:.2f}</div>", unsafe_allow_html=True)
-
-        if st.button("Open detail", key=f"sel_{gname}", use_container_width=True):
-            st.session_state.selected_gate = gname
-            st.rerun()
-
-        st.markdown("</div>", unsafe_allow_html=True)
+# Gate selection (simple + robust)
+sel = st.radio(
+    "Select gate",
+    gates,
+    horizontal=True,
+    index=gates.index(st.session_state.selected_gate),
+    label_visibility="collapsed",
+)
+if sel != st.session_state.selected_gate:
+    st.session_state.selected_gate = sel
+    st.rerun()
 
 card_end()
 st.markdown("")
@@ -504,26 +585,58 @@ g = get_gate()
 opening_pct = g["open_pct"]
 opening_m = opening_m_from_pct(opening_pct, g["max_open_m"])
 
+def gate_svg(open_pct: int):
+    """
+    Detail schematic (single gate). No 'Opening xx%'/'Opening x.xx m' text in SVG.
+    """
+    y = 120 - int(open_pct * 0.8)
+    y = max(40, min(120, y))
+    return f"""
+<svg width="100%" viewBox="0 0 520 260" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="water" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#0ea5e9" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#2563eb" stop-opacity="0.72"/>
+    </linearGradient>
+    <filter id="sh" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect x="22" y="20" width="476" height="220" rx="18" fill="#0b1220" stroke="#223049"/>
+
+  <rect x="150" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
+  <rect x="324" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
+
+  <rect x="80" y="170" width="360" height="44" rx="12" fill="#0a1020" stroke="#223049"/>
+  <rect x="92" y="182" width="336" height="30" rx="10" fill="url(#water)" opacity="0.95"/>
+
+  <rect x="220" y="62" width="80" height="140" rx="10" fill="#0a1020" stroke="#223049"/>
+
+  <g filter="url(#sh)">
+    <rect x="226" y="{y}" width="68" height="90" rx="10" fill="#1f6feb" opacity="0.92" stroke="#60a5fa"/>
+    <path d="M232 {y+18} H288" stroke="#93c5fd" stroke-width="3" opacity="0.75"/>
+    <path d="M232 {y+36} H288" stroke="#93c5fd" stroke-width="3" opacity="0.55"/>
+    <path d="M232 {y+54} H288" stroke="#93c5fd" stroke-width="3" opacity="0.40"/>
+  </g>
+</svg>
+"""
+
 def panel_gate_status():
-    # Gate Status: 2本バーに数値を並記（2つ前の方式）
-    # 追加要求: Motion/FullyOpen/FullyClose/LastCommand を全削除し、ここにCCTVを移動
     card_start(f"Gate Status — {st.session_state.selected_gate}",
                "Schematic + Opening bars + CCTV (dummy).", "🚪")
 
-    st.markdown(gate_svg(opening_pct, opening_m), unsafe_allow_html=True)
+    st.markdown(gate_svg(opening_pct), unsafe_allow_html=True)
 
-    # Bar 1: Opening %
     row("Opening (Percent)", f"{opening_pct}%")
     bar(opening_pct)
 
-    # Bar 2: Opening m (as percent of max)
     meter_percent = int(round((opening_m / g["max_open_m"]) * 100)) if g["max_open_m"] > 0 else 0
     row("Opening (Meters)", f"{opening_m:.2f} m  (max {g['max_open_m']:.2f} m)")
     bar(meter_percent)
 
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
-    # CCTV moved here
     st.markdown("<div class='hmi-sub' style='margin-top:2px;'>CCTV</div>", unsafe_allow_html=True)
     st.selectbox(
         "CCTV Camera",
@@ -536,7 +649,6 @@ def panel_gate_status():
     card_end()
 
 def panel_plan_actual():
-    # Control Targets: 直前の方式（中央に目標、左右に不足/超過）
     ss = st.session_state
 
     dq = ss.q_actual - ss.q_plan
@@ -548,14 +660,12 @@ def panel_plan_actual():
     card_start("Control Targets (Plan vs Actual)",
                "Plan is centered; Actual deviation is shown as shortage/excess (dummy).", "🎯")
 
-    # Q
     row("Q_plan (target)", f"{ss.q_plan:.2f} m³/s")
     row("Q_actual", f"{ss.q_actual:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)", dev_badge(abs(pq)))
     diverging_bar(pq, scale_pct=10.0)
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
-    # H
     row("H_plan (target)", f"{ss.h_plan:.2f} m")
     row("H_actual", f"{ss.h_actual:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)", dev_badge(abs(ph)))
     diverging_bar(ph, scale_pct=10.0)
@@ -577,13 +687,11 @@ def panel_auto_control():
         if st.button("⏸ Pause", use_container_width=True):
             st.session_state.control_cycle = "PAUSED"
             send_cmd("AUTO PAUSE")
-            g["motion"] = "STOP"
 
     with b3:
         if st.button("⏹ Stop", use_container_width=True):
             st.session_state.control_cycle = "STOPPED"
             send_cmd("AUTO STOP")
-            g["motion"] = "STOP"
 
     row("Control state", st.session_state.control_cycle,
         None,
@@ -604,7 +712,6 @@ def panel_manual_command():
     with b2:
         if st.button("■ Stop", use_container_width=True, disabled=is_blocked):
             send_cmd("STOP")
-            g["motion"] = "STOP"
     with b3:
         if st.button("⬇ Close", use_container_width=True, disabled=is_blocked):
             send_cmd("CLOSE")
@@ -680,7 +787,6 @@ with mid:
 with right:
     panel_alarms()
     panel_power()
-    # CCTV panel removed (moved into Gate Status)
 
 # =========================
 # Auto refresh
