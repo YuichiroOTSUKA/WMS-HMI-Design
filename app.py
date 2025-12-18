@@ -842,13 +842,11 @@ def panel_program_control():
     row("Pattern (selected)", ss.pattern_sel)
     if pt:
         row("Pattern description", pt["desc"])
-    row("Pattern (active)", ss.pattern)
-
+  
     row("Program state", "RUNNING" if ss.program_running else "STOPPED",
         None, "hmi-ok" if ss.program_running else "hmi-bad"
     )
-    row("Last applied", ss.program_last_applied)
-
+ 
     b1, b2 = st.columns(2, gap="large")
     with b1:
         if st.button("▶ RUN (panel)", use_container_width=True, disabled=is_blocked):
