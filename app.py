@@ -79,49 +79,11 @@ small { color: #94a3b8; }
 .gate-name{ font-weight: 900; font-size: 14px; margin-bottom: 6px; }
 .gate-mini{ color:#94a3b8; font-size: 12px; margin-bottom: 10px; }
 
-/* Simple bar (for gate opening) */
+/* Bars */
 .bar-wrap{ height: 10px; border-radius: 999px; background:#0a1020; border:1px solid #223049; overflow:hidden; }
 .bar-fill{ height: 100%; border-radius: 999px; background: linear-gradient(90deg, #0ea5e9, #2563eb); }
-
-/* Diverging bar (Plan in center) */
-.div-wrap{
-  position: relative;
-  height: 14px;
-  border-radius: 999px;
-  background:#0a1020;
-  border:1px solid #223049;
-  overflow:hidden;
-}
-.div-center{
-  position:absolute;
-  left:50%;
-  top:-2px;
-  width:2px;
-  height:18px;
-  background:#94a3b8;
-  opacity:0.8;
-}
-.div-fill-pos{
-  position:absolute;
-  left:50%;
-  top:0;
-  height:100%;
-  background: linear-gradient(90deg, #34d399, #0ea5e9);
-}
-.div-fill-neg{
-  position:absolute;
-  right:50%;
-  top:0;
-  height:100%;
-  background: linear-gradient(90deg, #fb7185, #f59e0b);
-}
-.div-scale{
-  display:flex;
-  justify-content:space-between;
-  color:#94a3b8;
-  font-size:11px;
-  margin-top:4px;
-}
+.bar-fill-warn{ background: linear-gradient(90deg, #fbbf24, #fb923c); }
+.bar-fill-bad{ background: linear-gradient(90deg, #fb7185, #ef4444); }
 
 /* Trend toggle */
 .toggle-row{
@@ -175,6 +137,12 @@ display:flex;align-items:center;justify-content:center;">
     )
 
 def gate_svg(open_pct: int, opening_m: float):
+    """
+    NOTE:
+    - User requested to REMOVE the two text lines inside the gate panel:
+      "Opening xx%" and "Opening x.xx m".
+    - The schematic remains, without those labels/values.
+    """
     y = 120 - int(open_pct * 0.8)
     y = max(40, min(120, y))
     return f"""
@@ -205,67 +173,29 @@ def gate_svg(open_pct: int, opening_m: float):
     <path d="M232 {y+36} H288" stroke="#93c5fd" stroke-width="3" opacity="0.55"/>
     <path d="M232 {y+54} H288" stroke="#93c5fd" stroke-width="3" opacity="0.40"/>
   </g>
-
-  <text x="48" y="60" fill="#94a3b8" font-size="14" font-family="sans-serif">Opening</text>
-  <text x="48" y="92" fill="#e2e8f0" font-size="34" font-weight="900" font-family="sans-serif">{open_pct}%</text>
-
-  <text x="470" y="60" fill="#94a3b8" font-size="14" font-family="sans-serif" text-anchor="end">Opening</text>
-  <text x="470" y="92" fill="#e2e8f0" font-size="28" font-weight="900" font-family="sans-serif" text-anchor="end">{opening_m:.2f} m</text>
 </svg>
 """
 
-def bar(percent: int):
+def bar(percent: int, state: str = "ok"):
     p = max(0, min(100, int(percent)))
-    st.markdown(
-        f"""
-<div class="bar-wrap"><div class="bar-fill" style="width:{p}%;"></div></div>
-""",
-        unsafe_allow_html=True
-    )
+    klass = "bar-fill"
+    if state == "warn":
+        klass = "bar-fill-warn"
+    elif state == "bad":
+        klass = "bar-fill-bad"
+    st.markdown(f"<div class='bar-wrap'><div class='{klass}' style='width:{p}%;'></div></div>", unsafe_allow_html=True)
 
 def pct_delta(plan: float, actual: float):
     if plan == 0:
         return 0.0
     return (actual - plan) / plan * 100.0
 
-def dev_state(abs_pct: float):
+def state_from_abs_pct(abs_pct: float):
     if abs_pct <= 2.0:
-        return "hmi-ok"
+        return "ok"
     if abs_pct <= 5.0:
-        return "hmi-warn"
-    return "hmi-bad"
-
-def diverging_bar(dev_pct: float, scale_pct: float = 10.0):
-    """
-    Diverging bar centered on target (Plan).
-    dev_pct: (Actual-Plan)/Plan*100
-    scale_pct: +/- scale_pct corresponds to full half-width.
-    """
-    # clamp
-    d = max(-scale_pct, min(scale_pct, dev_pct))
-    half = abs(d) / scale_pct * 50.0  # 0..50
-    if d >= 0:
-        st.markdown(f"""
-<div class="div-wrap">
-  <div class="div-center"></div>
-  <div class="div-fill-pos" style="width:{half}%;"></div>
-</div>
-""", unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-<div class="div-wrap">
-  <div class="div-center"></div>
-  <div class="div-fill-neg" style="width:{half}%;"></div>
-</div>
-""", unsafe_allow_html=True)
-
-    st.markdown(f"""
-<div class="div-scale">
-  <div>-{scale_pct:.0f}%</div>
-  <div>0%</div>
-  <div>+{scale_pct:.0f}%</div>
-</div>
-""", unsafe_allow_html=True)
+        return "warn"
+    return "bad"
 
 # =========================
 # Data model (dummy)
@@ -292,7 +222,6 @@ def init_state():
     if "station" not in ss: ss.station = "BBT15"
     if "canal" not in ss: ss.canal = "BaratMainGate"
     if "mode" not in ss: ss.mode = "REMOTE AUTOMATIC"
-
     if "selected_gate" not in ss: ss.selected_gate = "Gate1"
 
     if "remote_enabled" not in ss: ss.remote_enabled = True
@@ -320,7 +249,6 @@ def init_state():
     if "season" not in ss: ss.season = "Dry"
 
     if "control_cycle" not in ss: ss.control_cycle = "STOPPED"  # RUNNING/PAUSED/STOPPED
-
     if "trend_large" not in ss: ss.trend_large = False
 
     if "gate_state" not in ss:
@@ -503,12 +431,8 @@ for i, gname in enumerate(gates):
         st.markdown(f"<div class='gate-name'>🚪 {gname}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='gate-mini'>Motion: {gs['motion']} • Alarm: {'YES' if any(st.session_state.prot.values()) else 'NO'}</div>", unsafe_allow_html=True)
 
-        bar(open_pct)
-
-        st.markdown(
-            f"<div class='gate-mini'>% {open_pct}  •  m {open_m:.2f}</div>",
-            unsafe_allow_html=True
-        )
+        bar(open_pct, "ok")
+        st.markdown(f"<div class='gate-mini'>% {open_pct}  •  m {open_m:.2f}</div>", unsafe_allow_html=True)
 
         if st.button("Open detail", key=f"sel_{gname}", use_container_width=True):
             st.session_state.selected_gate = gname
@@ -528,13 +452,13 @@ opening_m = opening_m_from_pct(opening_pct, g["max_open_m"])
 
 def panel_gate_status():
     card_start(f"Gate Status — {st.session_state.selected_gate}",
-               "Schematic shows % and m. Text rows below schematic are intentionally removed.", "🚪")
+               "Schematic only (Opening text in SVG removed). Bars are visual only.", "🚪")
     st.markdown(gate_svg(opening_pct, opening_m), unsafe_allow_html=True)
 
-    # Keep purely visual bars only (no extra 2-line text info)
-    bar(opening_pct)
+    # Visual bars only (no extra text rows)
+    bar(opening_pct, "ok")
     meter_percent = int(round((opening_m / g["max_open_m"]) * 100)) if g["max_open_m"] > 0 else 0
-    bar(meter_percent)
+    bar(meter_percent, "ok")
 
     row("Motion", g["motion"])
     row("Fully Open", "YES" if g["fully_open"] else "NO")
@@ -547,25 +471,37 @@ def panel_plan_actual():
 
     dq = ss.q_actual - ss.q_plan
     pq = pct_delta(ss.q_plan, ss.q_actual)
-    q_badge = dev_state(abs(pq))
+    q_state = state_from_abs_pct(abs(pq))
 
     dh = ss.h_actual - ss.h_plan
     ph = pct_delta(ss.h_plan, ss.h_actual)
-    h_badge = dev_state(abs(ph))
+    h_state = state_from_abs_pct(abs(ph))
 
-    card_start("Control Targets (Plan vs Actual)", "Plan is centered; Actual deviation is shown as shortage/excess (dummy).", "🎯")
+    card_start("Control Targets (Plan vs Actual)", "Bar shows Actual relative to Plan (0–200% visualized).", "🎯")
 
-    # Q
+    # --- Q
     row("Q_plan (target)", f"{ss.q_plan:.2f} m³/s")
-    row("Q_actual", f"{ss.q_actual:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)", q_badge)
-    diverging_bar(pq, scale_pct=10.0)
+    row("Q_actual", f"{ss.q_actual:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)",
+        "hmi-ok" if q_state=="ok" else "hmi-warn" if q_state=="warn" else "hmi-bad")
+
+    ratio_q = 100.0 * (ss.q_actual / ss.q_plan) if ss.q_plan > 0 else 0.0
+    ratio_q = max(0.0, min(200.0, ratio_q))
+    bar_q = int(round(ratio_q / 2.0))  # 0..100
+    bar(bar_q, q_state)
+    st.caption("Q bar: 100% means Q_actual = Q_plan (visual scale 0–200%).")
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
-    # H
+    # --- H
     row("H_plan (target)", f"{ss.h_plan:.2f} m")
-    row("H_actual", f"{ss.h_actual:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)", h_badge)
-    diverging_bar(ph, scale_pct=10.0)
+    row("H_actual", f"{ss.h_actual:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)",
+        "hmi-ok" if h_state=="ok" else "hmi-warn" if h_state=="warn" else "hmi-bad")
+
+    ratio_h = 100.0 * (ss.h_actual / ss.h_plan) if ss.h_plan > 0 else 0.0
+    ratio_h = max(0.0, min(200.0, ratio_h))
+    bar_h = int(round(ratio_h / 2.0))
+    bar(bar_h, h_state)
+    st.caption("H bar: 100% means H_actual = H_plan (visual scale 0–200%).")
 
     card_end()
 
@@ -651,7 +587,6 @@ def panel_cctv():
 def panel_trends():
     card_start("Historical Trends", "Gate Opening and Discharge (dummy). Large view toggle for readability.", "📈")
 
-    # No expander boxes. Toggle only.
     st.session_state.trend_large = st.toggle("Large view", value=st.session_state.trend_large)
     h = 320 if st.session_state.trend_large else 180
 
