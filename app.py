@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import time
 from datetime import datetime
 import random
@@ -211,14 +212,6 @@ def overview_building_svg(
     selected_gate: str,
     alarm_active: bool,
 ):
-    """
-    Code-generated schematic:
-    - Simple building (roof + facade)
-    - Gate bays (one per gate)
-    - Each bay shows a stylized gate leaf and a water channel
-    - Opening % & Opening m shown under each bay
-    - Selected gate highlighted
-    """
     n = max(1, len(gates))
     W, H = 1100, 420
     margin = 60
@@ -227,11 +220,9 @@ def overview_building_svg(
     bay_h = 200
     bay_y = 150
 
-    # building elements
     roof_y = 40
     facade_y = 90
 
-    # colors
     stroke = "#223049"
     card = "#0b1220"
     panel = "#0a1020"
@@ -241,7 +232,6 @@ def overview_building_svg(
     gate_edge = "#60a5fa"
     txt = "#e5e7eb"
     sub = "#94a3b8"
-    warn = "#fbbf24"
     bad = "#fb7185"
     ok = "#34d399"
 
@@ -249,7 +239,7 @@ def overview_building_svg(
 
     svg_parts = []
     svg_parts.append(f"""
-<svg width="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">
+<svg width="100%" height="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="bggrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#0b1220" stop-opacity="1"/>
@@ -266,16 +256,13 @@ def overview_building_svg(
 
   <rect x="0" y="0" width="{W}" height="{H}" rx="22" fill="url(#bggrad)" stroke="{stroke}"/>
 
-  <!-- Header strip -->
   <text x="{margin}" y="32" fill="{txt}" font-size="18" font-weight="900">Gate Overview</text>
   <text x="{margin}" y="55" fill="{sub}" font-size="12" font-weight="700">{station}  •  Direction: {direction}</text>
 
-  <!-- Building (simple) -->
   <path d="M{margin} {facade_y} L{margin+120} {roof_y} H{W-margin-120} L{W-margin} {facade_y} Z"
         fill="#111c2e" stroke="{stroke}" opacity="0.95"/>
   <rect x="{margin+20}" y="{facade_y}" width="{W-2*margin-40}" height="80" rx="14" fill="#0f172a" stroke="{stroke}" opacity="0.95"/>
 
-  <!-- Alarm indicator -->
   <circle cx="{W-margin-18}" cy="36" r="7" fill="{alarm_color}" opacity="0.9"/>
   <text x="{W-margin-30}" y="55" fill="{sub}" font-size="11" font-weight="800" text-anchor="end">
     {'ALARM' if alarm_active else 'NORMAL'}
@@ -292,8 +279,6 @@ def overview_building_svg(
         x = margin + i*(bay_w + bay_gap)
         sel = (gname == selected_gate)
 
-        # Gate leaf vertical position (higher = more open)
-        # We'll move the leaf up when opening increases.
         leaf_min_y = bay_y + 24
         leaf_max_y = bay_y + 110
         leaf_y = leaf_max_y - int((leaf_max_y - leaf_min_y) * (open_pct/100.0))
@@ -301,35 +286,27 @@ def overview_building_svg(
         outline = "#60a5fa" if sel else stroke
         glow = 'filter="url(#shadow)"' if sel else ''
 
-        # small status dot per gate
-        gate_dot = ok
-        if alarm_active:
-            gate_dot = bad
+        gate_dot = bad if alarm_active else ok
 
         svg_parts.append(f"""
-  <!-- Bay {i+1} -->
   <g {glow}>
     <rect x="{x}" y="{bay_y}" width="{bay_w}" height="{bay_h}" rx="18" fill="{card}" stroke="{outline}" stroke-width="{2 if sel else 1}"/>
-    <!-- channel base -->
     <rect x="{x+18}" y="{bay_y+128}" width="{bay_w-36}" height="46" rx="14" fill="{panel}" stroke="{stroke}"/>
     <rect x="{x+26}" y="{bay_y+138}" width="{bay_w-52}" height="28" rx="12" fill="url(#water)" opacity="0.95"/>
-    <!-- gate frame -->
+
     <rect x="{x+bay_w*0.36}" y="{bay_y+26}" width="{bay_w*0.28}" height="130" rx="12" fill="{panel}" stroke="{stroke}"/>
-    <!-- gate leaf -->
+
     <rect x="{x+bay_w*0.36+6}" y="{leaf_y}" width="{bay_w*0.28-12}" height="70" rx="12" fill="{gate_fill}" stroke="{gate_edge}" opacity="0.92"/>
     <path d="M{x+bay_w*0.36+12} {leaf_y+16} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.7"/>
     <path d="M{x+bay_w*0.36+12} {leaf_y+34} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.5"/>
     <path d="M{x+bay_w*0.36+12} {leaf_y+52} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.35"/>
 
-    <!-- gate label & status -->
     <circle cx="{x+24}" cy="{bay_y+26}" r="6" fill="{gate_dot}" opacity="0.9"/>
     <text x="{x+40}" y="{bay_y+30}" fill="{txt}" font-size="13" font-weight="900">{gname}</text>
 
-    <!-- numeric under bay -->
     <text x="{x+bay_w/2}" y="{bay_y+bay_h+28}" fill="{txt}" font-size="13" font-weight="900" text-anchor="middle">{open_pct}%</text>
     <text x="{x+bay_w/2}" y="{bay_y+bay_h+48}" fill="{sub}" font-size="12" font-weight="800" text-anchor="middle">{open_m:.2f} m</text>
 
-    <!-- mini bars under bay -->
     <rect x="{x+bay_w*0.18}" y="{bay_y+bay_h+60}" width="{bay_w*0.64}" height="10" rx="999" fill="{panel}" stroke="{stroke}"/>
     <rect x="{x+bay_w*0.18}" y="{bay_y+bay_h+60}" width="{bay_w*0.64*(open_pct/100.0)}" height="10" rx="999"
           fill="url(#water)" opacity="0.95"/>
@@ -341,7 +318,6 @@ def overview_building_svg(
 
 # =========================
 # Data model (dummy)
-# Station -> Direction -> Gates
 # =========================
 def build_demo_assets():
     return {
@@ -390,7 +366,7 @@ def init_state():
     if "pattern" not in ss: ss.pattern = "C"
     if "season" not in ss: ss.season = "Dry"
 
-    if "control_cycle" not in ss: ss.control_cycle = "STOPPED"  # RUNNING/PAUSED/STOPPED
+    if "control_cycle" not in ss: ss.control_cycle = "STOPPED"
     if "trend_large" not in ss: ss.trend_large = False
 
     if "cctv_camera" not in ss: ss.cctv_camera = "CCTV — Gate Area"
@@ -539,7 +515,7 @@ with h4:
 st.markdown("")
 
 # =========================
-# Gate Overview (NEW: code-generated building schematic)
+# Gate Overview (SVG rendered via components.html)
 # =========================
 gates = ASSETS[st.session_state.station][st.session_state.direction]
 if st.session_state.selected_gate not in gates:
@@ -553,7 +529,7 @@ card_start(
     "🏛️"
 )
 
-svg = overview_building_svg(
+svg_overview = overview_building_svg(
     station=st.session_state.station,
     direction=st.session_state.direction,
     gates=gates,
@@ -561,9 +537,10 @@ svg = overview_building_svg(
     selected_gate=st.session_state.selected_gate,
     alarm_active=alarm_active,
 )
-st.markdown(svg, unsafe_allow_html=True)
 
-# Gate selection (simple + robust)
+# IMPORTANT: render SVG in an iframe to avoid sanitization
+components.html(svg_overview, height=460, scrolling=False)
+
 sel = st.radio(
     "Select gate",
     gates,
@@ -586,19 +563,16 @@ opening_pct = g["open_pct"]
 opening_m = opening_m_from_pct(opening_pct, g["max_open_m"])
 
 def gate_svg(open_pct: int):
-    """
-    Detail schematic (single gate). No 'Opening xx%'/'Opening x.xx m' text in SVG.
-    """
     y = 120 - int(open_pct * 0.8)
     y = max(40, min(120, y))
     return f"""
-<svg width="100%" viewBox="0 0 520 260" xmlns="http://www.w3.org/2000/svg">
+<svg width="100%" height="100%" viewBox="0 0 520 260" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="water" x1="0" x2="0" y1="0" y2="1">
+    <linearGradient id="water_d" x1="0" x2="0" y1="0" y2="1">
       <stop offset="0" stop-color="#0ea5e9" stop-opacity="0.92"/>
       <stop offset="1" stop-color="#2563eb" stop-opacity="0.72"/>
     </linearGradient>
-    <filter id="sh" x="-20%" y="-20%" width="140%" height="140%">
+    <filter id="sh_d" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.35"/>
     </filter>
   </defs>
@@ -609,11 +583,11 @@ def gate_svg(open_pct: int):
   <rect x="324" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
 
   <rect x="80" y="170" width="360" height="44" rx="12" fill="#0a1020" stroke="#223049"/>
-  <rect x="92" y="182" width="336" height="30" rx="10" fill="url(#water)" opacity="0.95"/>
+  <rect x="92" y="182" width="336" height="30" rx="10" fill="url(#water_d)" opacity="0.95"/>
 
   <rect x="220" y="62" width="80" height="140" rx="10" fill="#0a1020" stroke="#223049"/>
 
-  <g filter="url(#sh)">
+  <g filter="url(#sh_d)">
     <rect x="226" y="{y}" width="68" height="90" rx="10" fill="#1f6feb" opacity="0.92" stroke="#60a5fa"/>
     <path d="M232 {y+18} H288" stroke="#93c5fd" stroke-width="3" opacity="0.75"/>
     <path d="M232 {y+36} H288" stroke="#93c5fd" stroke-width="3" opacity="0.55"/>
@@ -626,7 +600,8 @@ def panel_gate_status():
     card_start(f"Gate Status — {st.session_state.selected_gate}",
                "Schematic + Opening bars + CCTV (dummy).", "🚪")
 
-    st.markdown(gate_svg(opening_pct), unsafe_allow_html=True)
+    # render SVG in iframe
+    components.html(gate_svg(opening_pct), height=290, scrolling=False)
 
     row("Opening (Percent)", f"{opening_pct}%")
     bar(opening_pct)
