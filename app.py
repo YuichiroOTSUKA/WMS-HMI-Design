@@ -79,20 +79,48 @@ small { color: #94a3b8; }
 .gate-name{ font-weight: 900; font-size: 14px; margin-bottom: 6px; }
 .gate-mini{ color:#94a3b8; font-size: 12px; margin-bottom: 10px; }
 
-/* Bars */
+/* Simple bar */
 .bar-wrap{ height: 10px; border-radius: 999px; background:#0a1020; border:1px solid #223049; overflow:hidden; }
 .bar-fill{ height: 100%; border-radius: 999px; background: linear-gradient(90deg, #0ea5e9, #2563eb); }
-.bar-fill-warn{ background: linear-gradient(90deg, #fbbf24, #fb923c); }
-.bar-fill-bad{ background: linear-gradient(90deg, #fb7185, #ef4444); }
 
-/* Trend toggle */
-.toggle-row{
+/* Diverging bar (Plan in center) */
+.div-wrap{
+  position: relative;
+  height: 14px;
+  border-radius: 999px;
+  background:#0a1020;
+  border:1px solid #223049;
+  overflow:hidden;
+}
+.div-center{
+  position:absolute;
+  left:50%;
+  top:-2px;
+  width:2px;
+  height:18px;
+  background:#94a3b8;
+  opacity:0.8;
+}
+.div-fill-pos{
+  position:absolute;
+  left:50%;
+  top:0;
+  height:100%;
+  background: linear-gradient(90deg, #34d399, #0ea5e9);
+}
+.div-fill-neg{
+  position:absolute;
+  right:50%;
+  top:0;
+  height:100%;
+  background: linear-gradient(90deg, #fb7185, #f59e0b);
+}
+.div-scale{
   display:flex;
-  align-items:center;
-  justify-content:flex-end;
-  margin-top:-6px;
-  margin-bottom:6px;
-  gap:10px;
+  justify-content:space-between;
+  color:#94a3b8;
+  font-size:11px;
+  margin-top:4px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -138,10 +166,7 @@ display:flex;align-items:center;justify-content:center;">
 
 def gate_svg(open_pct: int, opening_m: float):
     """
-    NOTE:
-    - User requested to REMOVE the two text lines inside the gate panel:
-      "Opening xx%" and "Opening x.xx m".
-    - The schematic remains, without those labels/values.
+    NOTE: SVG内の「Opening xx%」「Opening x.xx m」の2行テキストは削除（ユーザー指示）。
     """
     y = 120 - int(open_pct * 0.8)
     y = max(40, min(120, y))
@@ -176,26 +201,52 @@ def gate_svg(open_pct: int, opening_m: float):
 </svg>
 """
 
-def bar(percent: int, state: str = "ok"):
+def bar(percent: int):
     p = max(0, min(100, int(percent)))
-    klass = "bar-fill"
-    if state == "warn":
-        klass = "bar-fill-warn"
-    elif state == "bad":
-        klass = "bar-fill-bad"
-    st.markdown(f"<div class='bar-wrap'><div class='{klass}' style='width:{p}%;'></div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='bar-wrap'><div class='bar-fill' style='width:{p}%;'></div></div>", unsafe_allow_html=True)
 
 def pct_delta(plan: float, actual: float):
     if plan == 0:
         return 0.0
     return (actual - plan) / plan * 100.0
 
-def state_from_abs_pct(abs_pct: float):
+def dev_badge(abs_pct: float) -> str:
     if abs_pct <= 2.0:
-        return "ok"
+        return "hmi-ok"
     if abs_pct <= 5.0:
-        return "warn"
-    return "bad"
+        return "hmi-warn"
+    return "hmi-bad"
+
+def diverging_bar(dev_pct: float, scale_pct: float = 10.0):
+    """
+    Diverging bar centered on target (Plan).
+    dev_pct: (Actual-Plan)/Plan*100
+    scale_pct: +/- scale_pct corresponds to full half-width.
+    """
+    d = max(-scale_pct, min(scale_pct, dev_pct))
+    half = abs(d) / scale_pct * 50.0  # 0..50
+    if d >= 0:
+        st.markdown(f"""
+<div class="div-wrap">
+  <div class="div-center"></div>
+  <div class="div-fill-pos" style="width:{half}%;"></div>
+</div>
+""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+<div class="div-wrap">
+  <div class="div-center"></div>
+  <div class="div-fill-neg" style="width:{half}%;"></div>
+</div>
+""", unsafe_allow_html=True)
+
+    st.markdown(f"""
+<div class="div-scale">
+  <div>-{scale_pct:.0f}%</div>
+  <div>0%</div>
+  <div>+{scale_pct:.0f}%</div>
+</div>
+""", unsafe_allow_html=True)
 
 # =========================
 # Data model (dummy)
@@ -300,25 +351,25 @@ def blocked():
 
 def send_cmd(cmd: str):
     now = datetime.now().strftime("%H:%M:%S")
-    g = get_gate()
-    g["last_cmd"] = cmd
-    g["last_cmd_time"] = now
+    gg = get_gate()
+    gg["last_cmd"] = cmd
+    gg["last_cmd_time"] = now
 
 def step_gate_toward(target_pct: int):
-    g = get_gate()
-    p = g["open_pct"]
+    gg = get_gate()
+    p = gg["open_pct"]
     if p < target_pct:
         p = min(100, p + 2)
-        g["motion"] = "OPENING"
+        gg["motion"] = "OPENING"
     elif p > target_pct:
         p = max(0, p - 2)
-        g["motion"] = "CLOSING"
+        gg["motion"] = "CLOSING"
     else:
-        g["motion"] = "STOP"
+        gg["motion"] = "STOP"
 
-    g["open_pct"] = p
-    g["fully_open"] = (p >= 100)
-    g["fully_close"] = (p <= 0)
+    gg["open_pct"] = p
+    gg["fully_open"] = (p >= 100)
+    gg["fully_close"] = (p <= 0)
 
 def opening_m_from_pct(open_pct: int, max_open_m: float):
     return round(max_open_m * (open_pct / 100.0), 2)
@@ -333,8 +384,8 @@ def tick_signals():
     drift = 0.02 if ss.control_cycle == "RUNNING" else 0.00
     ss.q_actual = round(max(0.0, ss.q_actual + random.uniform(-0.05, 0.05) - (ss.q_actual - ss.q_plan)*drift), 2)
 
-    g = get_gate()
-    open_pct = g["open_pct"]
+    gg = get_gate()
+    open_pct = gg["open_pct"]
     base_h = ss.h_plan + (open_pct - 50) * 0.002
     ss.h_actual = round(base_h + random.uniform(-0.02, 0.02), 2)
 
@@ -431,7 +482,7 @@ for i, gname in enumerate(gates):
         st.markdown(f"<div class='gate-name'>🚪 {gname}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='gate-mini'>Motion: {gs['motion']} • Alarm: {'YES' if any(st.session_state.prot.values()) else 'NO'}</div>", unsafe_allow_html=True)
 
-        bar(open_pct, "ok")
+        bar(open_pct)
         st.markdown(f"<div class='gate-mini'>% {open_pct}  •  m {open_m:.2f}</div>", unsafe_allow_html=True)
 
         if st.button("Open detail", key=f"sel_{gname}", use_container_width=True):
@@ -451,14 +502,19 @@ opening_pct = g["open_pct"]
 opening_m = opening_m_from_pct(opening_pct, g["max_open_m"])
 
 def panel_gate_status():
+    # Gate Status: 2本バーに数値を並記（2つ前の方式に戻す）
     card_start(f"Gate Status — {st.session_state.selected_gate}",
-               "Schematic only (Opening text in SVG removed). Bars are visual only.", "🚪")
+               "Schematic only (Opening text in SVG removed). Bars show values (%, m).", "🚪")
     st.markdown(gate_svg(opening_pct, opening_m), unsafe_allow_html=True)
 
-    # Visual bars only (no extra text rows)
-    bar(opening_pct, "ok")
+    # Bar 1: Opening %
+    row("Opening (Percent)", f"{opening_pct}%")
+    bar(opening_pct)
+
+    # Bar 2: Opening m (as percent of max)
     meter_percent = int(round((opening_m / g["max_open_m"]) * 100)) if g["max_open_m"] > 0 else 0
-    bar(meter_percent, "ok")
+    row("Opening (Meters)", f"{opening_m:.2f} m  (max {g['max_open_m']:.2f} m)")
+    bar(meter_percent)
 
     row("Motion", g["motion"])
     row("Fully Open", "YES" if g["fully_open"] else "NO")
@@ -467,41 +523,29 @@ def panel_gate_status():
     card_end()
 
 def panel_plan_actual():
+    # Control Targets: 直前の方式（中央に目標、左右に不足/超過）
     ss = st.session_state
 
     dq = ss.q_actual - ss.q_plan
     pq = pct_delta(ss.q_plan, ss.q_actual)
-    q_state = state_from_abs_pct(abs(pq))
 
     dh = ss.h_actual - ss.h_plan
     ph = pct_delta(ss.h_plan, ss.h_actual)
-    h_state = state_from_abs_pct(abs(ph))
 
-    card_start("Control Targets (Plan vs Actual)", "Bar shows Actual relative to Plan (0–200% visualized).", "🎯")
+    card_start("Control Targets (Plan vs Actual)",
+               "Plan is centered; Actual deviation is shown as shortage/excess (dummy).", "🎯")
 
-    # --- Q
+    # Q
     row("Q_plan (target)", f"{ss.q_plan:.2f} m³/s")
-    row("Q_actual", f"{ss.q_actual:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)",
-        "hmi-ok" if q_state=="ok" else "hmi-warn" if q_state=="warn" else "hmi-bad")
-
-    ratio_q = 100.0 * (ss.q_actual / ss.q_plan) if ss.q_plan > 0 else 0.0
-    ratio_q = max(0.0, min(200.0, ratio_q))
-    bar_q = int(round(ratio_q / 2.0))  # 0..100
-    bar(bar_q, q_state)
-    st.caption("Q bar: 100% means Q_actual = Q_plan (visual scale 0–200%).")
+    row("Q_actual", f"{ss.q_actual:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)", dev_badge(abs(pq)))
+    diverging_bar(pq, scale_pct=10.0)
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
-    # --- H
+    # H
     row("H_plan (target)", f"{ss.h_plan:.2f} m")
-    row("H_actual", f"{ss.h_actual:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)",
-        "hmi-ok" if h_state=="ok" else "hmi-warn" if h_state=="warn" else "hmi-bad")
-
-    ratio_h = 100.0 * (ss.h_actual / ss.h_plan) if ss.h_plan > 0 else 0.0
-    ratio_h = max(0.0, min(200.0, ratio_h))
-    bar_h = int(round(ratio_h / 2.0))
-    bar(bar_h, h_state)
-    st.caption("H bar: 100% means H_actual = H_plan (visual scale 0–200%).")
+    row("H_actual", f"{ss.h_actual:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)", dev_badge(abs(ph)))
+    diverging_bar(ph, scale_pct=10.0)
 
     card_end()
 
