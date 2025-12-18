@@ -256,11 +256,8 @@ def overview_building_svg(
     </filter>
   </defs>
 
-  <rect x="0" y="0" width="{W}" height="{H}" rx="22" fill="url(#bggrad)" stroke="{stroke}"/>
-
-  <text x="{margin}" y="32" fill="{txt}" font-size="18" font-weight="900">Gate Overview</text>
-  <text x="{margin}" y="55" fill="{sub}" font-size="12" font-weight="700">{station}  •  Direction: {direction}</text>
-
+  <rect x="0" y="0" width="{W}" height="{H}" rx="22" fill="url(#bggrad)" stroke="none"/>
+ 
   <path d="M{margin} {facade_y} L{margin+120} {roof_y} H{W-margin-120} L{W-margin} {facade_y} Z"
         fill="#111c2e" stroke="{stroke}" opacity="0.95"/>
   <rect x="{margin+20}" y="{facade_y}" width="{W-2*margin-40}" height="80" rx="14" fill="#0f172a" stroke="{stroke}" opacity="0.95"/>
