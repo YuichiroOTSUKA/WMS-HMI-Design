@@ -4,7 +4,7 @@ from datetime import datetime
 import random
 import math
 
-st.set_page_config(page_title="WMS HMI Demo (TS-aligned)", layout="wide")
+st.set_page_config(page_title="TC/SPC HMI Demo (TS-aligned)", layout="wide")
 
 # =========================
 # UI / CSS
@@ -302,6 +302,9 @@ def init_state():
     if "control_cycle" not in ss: ss.control_cycle = "STOPPED"  # RUNNING/PAUSED/STOPPED
     if "trend_large" not in ss: ss.trend_large = False
 
+    # CCTV selection (dummy)
+    if "cctv_camera" not in ss: ss.cctv_camera = "CCTV — Gate Area"
+
     if "gate_state" not in ss:
         gs = {}
         for stn, canals in ASSETS.items():
@@ -397,7 +400,7 @@ tick_signals()
 # =========================
 # Sidebar
 # =========================
-st.sidebar.markdown("## WMS HMI Demo")
+st.sidebar.markdown("## TC/SPC HMI Demo")
 
 stations = list(ASSETS.keys())
 st.sidebar.selectbox("Station", stations, key="station")
@@ -405,7 +408,7 @@ st.sidebar.selectbox("Station", stations, key="station")
 canals = list(ASSETS[st.session_state.station].keys())
 if st.session_state.canal not in canals:
     st.session_state.canal = canals[0]
-st.sidebar.selectbox("Canal / Direction", canals, key="canal")
+st.sidebar.selectbox("Canal / ほうろ", canals, key="canal")
 
 st.sidebar.markdown("---")
 st.sidebar.radio(
@@ -502,9 +505,11 @@ opening_pct = g["open_pct"]
 opening_m = opening_m_from_pct(opening_pct, g["max_open_m"])
 
 def panel_gate_status():
-    # Gate Status: 2本バーに数値を並記（2つ前の方式に戻す）
+    # Gate Status: 2本バーに数値を並記（2つ前の方式）
+    # 追加要求: Motion/FullyOpen/FullyClose/LastCommand を全削除し、ここにCCTVを移動
     card_start(f"Gate Status — {st.session_state.selected_gate}",
-               "Schematic only (Opening text in SVG removed). Bars show values (%, m).", "🚪")
+               "Schematic + Opening bars + CCTV (dummy).", "🚪")
+
     st.markdown(gate_svg(opening_pct, opening_m), unsafe_allow_html=True)
 
     # Bar 1: Opening %
@@ -516,10 +521,18 @@ def panel_gate_status():
     row("Opening (Meters)", f"{opening_m:.2f} m  (max {g['max_open_m']:.2f} m)")
     bar(meter_percent)
 
-    row("Motion", g["motion"])
-    row("Fully Open", "YES" if g["fully_open"] else "NO")
-    row("Fully Close", "YES" if g["fully_close"] else "NO")
-    row("Last Command", g["last_cmd"], f"@ {g['last_cmd_time']}" if g["last_cmd_time"] != "—" else None, "hmi-pill")
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+    # CCTV moved here
+    st.markdown("<div class='hmi-sub' style='margin-top:2px;'>CCTV</div>", unsafe_allow_html=True)
+    st.selectbox(
+        "CCTV Camera",
+        ["CCTV — Gate Area", "CCTV — Upstream", "CCTV — Downstream"],
+        key="cctv_camera",
+        label_visibility="collapsed",
+    )
+    cctv_box(st.session_state.cctv_camera)
+
     card_end()
 
 def panel_plan_actual():
@@ -623,11 +636,6 @@ def panel_power():
         None, "hmi-ok" if st.session_state.gen_state != "ERROR" else "hmi-bad")
     card_end()
 
-def panel_cctv():
-    card_start("CCTV", "Observation (placeholder)", "📹")
-    cctv_box("CCTV — Gate Area")
-    card_end()
-
 def panel_trends():
     card_start("Historical Trends", "Gate Opening and Discharge (dummy). Large view toggle for readability.", "📈")
 
@@ -672,7 +680,7 @@ with mid:
 with right:
     panel_alarms()
     panel_power()
-    panel_cctv()
+    # CCTV panel removed (moved into Gate Status)
 
 # =========================
 # Auto refresh
