@@ -405,7 +405,7 @@ st.sidebar.selectbox("Station", stations, key="station")
 canals = list(ASSETS[st.session_state.station].keys())
 if st.session_state.canal not in canals:
     st.session_state.canal = canals[0]
-st.sidebar.selectbox("Canal / ほうろ", canals, key="canal")
+st.sidebar.selectbox("Canal / Direction", canals, key="canal")
 
 st.sidebar.markdown("---")
 st.sidebar.radio(
