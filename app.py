@@ -202,39 +202,41 @@ def compute_h_plan_from_qplan(q_plan: float):
     return round(1.10 + 0.06 * (q_plan - 10.0), 2)
 
 # =========================
+# Pattern Catalog (dummy)
+# =========================
+PATTERNS = {
+    "A": {"target_open_base": 45, "target_open_gain": 2.0, "desc": "Standard"},
+    "B": {"target_open_base": 55, "target_open_gain": 2.5, "desc": "High Demand"},
+    "C": {"target_open_base": 35, "target_open_gain": 1.6, "desc": "Conservation"},
+    "HOLD": {"target_open_base": 0, "target_open_gain": 0.0, "desc": "Safe Hold (no movement)"},
+}
+
+# =========================
 # Remote Program Catalog (dummy)
 # =========================
 PROGRAMS = {
     "P-01 Dry / Standard": {
         "season": "Dry",
-        "pattern": "A",
+        "default_pattern": "A",
         "q_plan_bias": +0.00,          # m3/s (applied slowly if enabled)
-        "target_open_base": 45,        # %
-        "target_open_gain": 2.0,       # % per (Q_plan-10)
         "desc": "Dry season standard distribution program.",
     },
     "P-02 Dry / High Demand": {
         "season": "Dry",
-        "pattern": "B",
+        "default_pattern": "B",
         "q_plan_bias": +0.80,
-        "target_open_base": 55,
-        "target_open_gain": 2.5,
         "desc": "Dry season high-demand program (higher Q target).",
     },
     "P-03 Wet / Conservation": {
         "season": "Wet",
-        "pattern": "C",
+        "default_pattern": "C",
         "q_plan_bias": -0.50,
-        "target_open_base": 35,
-        "target_open_gain": 1.6,
         "desc": "Wet season conservation program (lower Q target).",
     },
     "P-04 Maintenance / Safe Hold": {
         "season": "Dry",
-        "pattern": "HOLD",
+        "default_pattern": "HOLD",
         "q_plan_bias": -999.0,         # special: do not modify Q_plan
-        "target_open_base": 0,
-        "target_open_gain": 0.0,
         "desc": "Maintenance hold (no automatic movement).",
     },
 }
@@ -400,7 +402,7 @@ def init_state():
     if "q_actual" not in ss: ss.q_actual = 12.72
     if "h_actual" not in ss: ss.h_actual = 1.63
 
-    if "pattern" not in ss: ss.pattern = "C"
+    if "pattern" not in ss: ss.pattern = "A"
     if "season" not in ss: ss.season = "Dry"
 
     if "control_cycle" not in ss: ss.control_cycle = "STOPPED"
@@ -410,8 +412,10 @@ def init_state():
 
     # Remote Program state
     if "program_name" not in ss: ss.program_name = "P-01 Dry / Standard"
+    if "pattern_sel" not in ss: ss.pattern_sel = "A"
     if "program_running" not in ss: ss.program_running = False
     if "program_last_applied" not in ss: ss.program_last_applied = "—"
+    if "pattern_last_changed" not in ss: ss.pattern_last_changed = "—"
 
     if "gate_state" not in ss:
         gs = {}
@@ -503,20 +507,24 @@ def apply_remote_program_control():
     if not prog:
         return
 
-    # Update screen labels from program
+    # Update season from program
     ss.season = prog["season"]
-    ss.pattern = prog["pattern"]
 
-    # Optional: slowly bias Q_plan (dummy). HOLD does not modify Q_plan.
+    # Pattern is selected by operator via dropdown (priority over program default)
+    ss.pattern = ss.pattern_sel
+
+    # Optional: slowly bias Q_plan (dummy). Maintenance does not modify Q_plan.
     if prog["q_plan_bias"] > -900:
         ss.q_plan = round(max(5.0, min(20.0, ss.q_plan + prog["q_plan_bias"] * 0.01)), 2)
 
+    pt = PATTERNS.get(ss.pattern, PATTERNS["A"])
+
     # Target opening derived from Q_plan (dummy)
-    target = int(prog["target_open_base"] + prog["target_open_gain"] * (ss.q_plan - 10.0))
+    target = int(pt["target_open_base"] + pt["target_open_gain"] * (ss.q_plan - 10.0))
     target = max(0, min(100, target))
 
     # HOLD means no movement
-    if prog["pattern"] == "HOLD":
+    if ss.pattern == "HOLD":
         ss.program_last_applied = datetime.now().strftime("%H:%M:%S")
         return
 
@@ -555,12 +563,16 @@ if st.session_state.mode == "REMOTE PROGRAM":
     p = PROGRAMS[st.session_state.program_name]
     st.sidebar.caption(p["desc"])
 
+    # Pattern dropdown (operator selection)
+    st.sidebar.selectbox("Pattern", list(PATTERNS.keys()), key="pattern_sel")
+    st.sidebar.caption(f"Pattern detail: {PATTERNS[st.session_state.pattern_sel]['desc']}")
+
     colA, colB = st.sidebar.columns(2)
     with colA:
         if st.sidebar.button("▶ RUN", use_container_width=True, disabled=blocked()):
             st.session_state.program_running = True
             st.session_state.control_cycle = "RUNNING"
-            send_cmd(f"PROGRAM RUN: {st.session_state.program_name}")
+            send_cmd(f"PROGRAM RUN: {st.session_state.program_name} / PATTERN {st.session_state.pattern_sel}")
     with colB:
         if st.sidebar.button("⏹ STOP", use_container_width=True):
             st.session_state.program_running = False
@@ -636,7 +648,6 @@ svg_overview = overview_building_svg(
     alarm_active=alarm_active,
 )
 
-# IMPORTANT: render SVG in an iframe to avoid sanitization
 html_overview = f"""
 <!doctype html>
 <html>
@@ -724,7 +735,6 @@ def panel_gate_status():
     card_start(f"Gate Status — {st.session_state.selected_gate}",
                "Schematic + Opening bars + CCTV (dummy).", "🚪")
 
-    # render SVG in iframe
     components.html(gate_svg(opening_pct), height=290, scrolling=False)
 
     row("Opening (Percent)", f"{opening_pct}%")
@@ -820,14 +830,19 @@ def panel_manual_command():
 def panel_program_control():
     ss = st.session_state
     prog = PROGRAMS.get(ss.program_name, None)
+    pt = PATTERNS.get(ss.pattern_sel, None)
 
-    card_start("Program Control", "Select program and run/stop (dummy).", "🧩")
+    card_start("Program Control", "Select Program + Pattern, then Run/Stop (dummy).", "🧩")
 
     row("Program", ss.program_name)
     if prog:
-        row("Description", prog["desc"])
+        row("Program description", prog["desc"])
         row("Season (from program)", prog["season"])
-        row("Pattern (from program)", prog["pattern"])
+
+    row("Pattern (selected)", ss.pattern_sel)
+    if pt:
+        row("Pattern description", pt["desc"])
+    row("Pattern (active)", ss.pattern)
 
     row("Program state", "RUNNING" if ss.program_running else "STOPPED",
         None, "hmi-ok" if ss.program_running else "hmi-bad"
@@ -839,7 +854,7 @@ def panel_program_control():
         if st.button("▶ RUN (panel)", use_container_width=True, disabled=is_blocked):
             ss.program_running = True
             ss.control_cycle = "RUNNING"
-            send_cmd(f"PROGRAM RUN: {ss.program_name}")
+            send_cmd(f"PROGRAM RUN: {ss.program_name} / PATTERN {ss.pattern_sel}")
     with b2:
         if st.button("⏹ STOP (panel)", use_container_width=True):
             ss.program_running = False
