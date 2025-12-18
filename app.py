@@ -397,7 +397,7 @@ tick_signals()
 # =========================
 # Sidebar
 # =========================
-st.sidebar.markdown("## TC/SPC HMI Demo")
+st.sidebar.markdown("## WMS HMI Demo")
 
 stations = list(ASSETS.keys())
 st.sidebar.selectbox("Station", stations, key="station")
