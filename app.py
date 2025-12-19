@@ -198,11 +198,16 @@ def diverging_bar(dev_pct: float, scale_pct: float = 10.0):
 def opening_m_from_pct(open_pct: int, max_open_m: float):
     return round(max_open_m * (open_pct / 100.0), 2)
 
+def opening_pct_from_m(open_m: float, max_open_m: float):
+    if max_open_m <= 0:
+        return 0
+    return int(max(0, min(100, round(open_m / max_open_m * 100))))
+
 def compute_h_plan_from_qplan(q_plan: float):
     return round(1.10 + 0.06 * (q_plan - 10.0), 2)
 
 # =========================
-# Pattern Catalog (dummy)
+# Pattern / Program (dummy)
 # =========================
 PATTERNS = {
     "A": {"target_open_base": 45, "target_open_gain": 2.0, "desc": "Standard"},
@@ -211,38 +216,245 @@ PATTERNS = {
     "HOLD": {"target_open_base": 0, "target_open_gain": 0.0, "desc": "Safe Hold (no movement)"},
 }
 
-# =========================
-# Remote Program Catalog (dummy)
-# =========================
 PROGRAMS = {
-    "P-01 Dry / Standard": {
-        "season": "Dry",
-        "default_pattern": "A",
-        "q_plan_bias": +0.00,          # m3/s (applied slowly if enabled)
-        "desc": "Dry season standard distribution program.",
-    },
-    "P-02 Dry / High Demand": {
-        "season": "Dry",
-        "default_pattern": "B",
-        "q_plan_bias": +0.80,
-        "desc": "Dry season high-demand program (higher Q target).",
-    },
-    "P-03 Wet / Conservation": {
-        "season": "Wet",
-        "default_pattern": "C",
-        "q_plan_bias": -0.50,
-        "desc": "Wet season conservation program (lower Q target).",
-    },
-    "P-04 Maintenance / Safe Hold": {
-        "season": "Dry",
-        "default_pattern": "HOLD",
-        "q_plan_bias": -999.0,         # special: do not modify Q_plan
-        "desc": "Maintenance hold (no automatic movement).",
-    },
+    "P-01 Dry / Standard": {"season": "Dry", "default_pattern": "A", "q_plan_bias": +0.00, "desc": "Dry season standard distribution program."},
+    "P-02 Dry / High Demand": {"season": "Dry", "default_pattern": "B", "q_plan_bias": +0.80, "desc": "Dry season high-demand program (higher Q target)."},
+    "P-03 Wet / Conservation": {"season": "Wet", "default_pattern": "C", "q_plan_bias": -0.50, "desc": "Wet season conservation program (lower Q target)."},
+    "P-04 Maintenance / Safe Hold": {"season": "Dry", "default_pattern": "HOLD", "q_plan_bias": -999.0, "desc": "Maintenance hold (no automatic movement)."},
 }
 
 # =========================
-# SVG: Building + multi-gate overview (NO external images)
+# Data model (dummy)
+# =========================
+def build_demo_assets():
+    return {
+        "BBT15": {
+            "BaratMainGate": ["Gate1", "Gate2", "Gate3", "Gate4"],
+            "WastewayGate": ["Gate1", "Gate2", "Gate3"],
+            "CiberangMainGate": ["Gate1", "Gate2"],
+        },
+        "BUT10": {
+            "UtaraMainGate": ["Gate1", "Gate2", "Gate3", "Gate4"],
+            "WaruGate": ["Gate1", "Gate2"],
+        }
+    }
+
+ASSETS = build_demo_assets()
+
+# =========================
+# Key helpers
+# =========================
+def current_dir_key():
+    ss = st.session_state
+    return f"{ss.station}/{ss.direction}"
+
+def current_gate_key():
+    ss = st.session_state
+    return f"{ss.station}/{ss.direction}/{ss.selected_gate}"
+
+# =========================
+# State init
+# =========================
+def init_state():
+    ss = st.session_state
+
+    if "station" not in ss: ss.station = "BBT15"
+    if "direction" not in ss: ss.direction = "BaratMainGate"
+    if "mode" not in ss: ss.mode = "REMOTE AUTOMATIC"
+    if "selected_gate" not in ss: ss.selected_gate = "Gate1"
+
+    if "remote_enabled" not in ss: ss.remote_enabled = True
+    if "comm_main" not in ss: ss.comm_main = "NORMAL"
+    if "comm_backup" not in ss: ss.comm_backup = "STANDBY"
+
+    if "commercial_power" not in ss: ss.commercial_power = True
+    if "gen_state" not in ss: ss.gen_state = "OFF"
+
+    if "prot" not in ss:
+        ss.prot = {
+            "ELR": False,
+            "Overload": False,
+            "Over Torque Open": False,
+            "Over Torque Close": False,
+            "Control De-Energize": False,
+        }
+
+    # Direction-level targets/actuals (NEW)
+    if "direction_state" not in ss:
+        ds = {}
+        for stn, dirs in ASSETS.items():
+            for d in dirs.keys():
+                dk = f"{stn}/{d}"
+                q_plan = round(random.uniform(9.0, 14.0), 2)
+                h_plan = compute_h_plan_from_qplan(q_plan)
+                q_actual = round(q_plan + random.uniform(-0.3, 0.3), 2)
+                h_actual = round(h_plan + random.uniform(-0.05, 0.05), 2)
+                ds[dk] = {
+                    "q_plan": q_plan,
+                    "h_plan": h_plan,
+                    "q_actual": q_actual,
+                    "h_actual": h_actual,
+                    "trend_q": [round(q_actual + 0.12*math.sin(i/12) + random.uniform(-0.05,0.05), 2) for i in range(120)],
+                }
+        ss.direction_state = ds
+
+    # Global mode execution (direction-level concept)
+    if "auto_state" not in ss: ss.auto_state = "STOPPED"     # RUNNING/PAUSED/STOPPED
+    if "program_running" not in ss: ss.program_running = False
+
+    # Remote Program selections
+    if "program_name" not in ss: ss.program_name = "P-01 Dry / Standard"
+    if "pattern_sel" not in ss: ss.pattern_sel = "A"
+    if "season" not in ss: ss.season = PROGRAMS[ss.program_name]["season"]
+
+    if "cctv_camera" not in ss: ss.cctv_camera = "CCTV — Gate Area"
+
+    # Gate states
+    if "gate_state" not in ss:
+        gs = {}
+        for stn, dirs in ASSETS.items():
+            for d, gates in dirs.items():
+                for g in gates:
+                    key = f"{stn}/{d}/{g}"
+                    open_pct = random.choice([0, 10, 25, 40, 55, 70, 85])
+                    max_open_m = random.choice([2.00, 1.80, 1.60])
+                    gs[key] = {
+                        "open_pct": open_pct,
+                        "max_open_m": max_open_m,
+                        "last_cmd": "—",
+                        "last_cmd_time": "—",
+                    }
+        ss.gate_state = gs
+
+    # Trends
+    if "trend_gate" not in ss:
+        ss.trend_gate = [random.randint(0, 100) for _ in range(120)]
+
+    if "trend_large" not in ss: ss.trend_large = False
+
+init_state()
+
+# =========================
+# Core access control
+# =========================
+def blocked():
+    ss = st.session_state
+    if ss.mode == "LOCAL (LCP ACTIVE)":
+        return True
+    if any(ss.prot.values()):
+        return True
+    if ss.gen_state == "ERROR":
+        return True
+    if not ss.remote_enabled:
+        return True
+    return False
+
+def get_gate():
+    return st.session_state.gate_state[current_gate_key()]
+
+def get_dir():
+    return st.session_state.direction_state[current_dir_key()]
+
+def send_cmd(cmd: str):
+    now = datetime.now().strftime("%H:%M:%S")
+    gg = get_gate()
+    gg["last_cmd"] = cmd
+    gg["last_cmd_time"] = now
+
+def set_gate_open_pct(open_pct: int):
+    gg = get_gate()
+    gg["open_pct"] = int(max(0, min(100, open_pct)))
+
+def step_gate_toward(gate_key: str, target_pct: int):
+    gg = st.session_state.gate_state[gate_key]
+    p = gg["open_pct"]
+    if p < target_pct:
+        p = min(100, p + 2)
+    elif p > target_pct:
+        p = max(0, p - 2)
+    gg["open_pct"] = p
+
+def step_all_gates_in_direction(target_pct: int):
+    ss = st.session_state
+    gates = ASSETS[ss.station][ss.direction]
+    for g in gates:
+        k = f"{ss.station}/{ss.direction}/{g}"
+        step_gate_toward(k, target_pct)
+
+# =========================
+# Direction signals update (dummy)
+# =========================
+def tick_direction_signals():
+    ss = st.session_state
+    d = get_dir()
+
+    d["h_plan"] = compute_h_plan_from_qplan(d["q_plan"])
+
+    drift = 0.02 if ss.auto_state == "RUNNING" else 0.00
+    d["q_actual"] = round(max(0.0, d["q_actual"] + random.uniform(-0.05, 0.05) - (d["q_actual"] - d["q_plan"])*drift), 2)
+
+    # tie H_actual loosely with plan + noise (direction-level)
+    d["h_actual"] = round(d["h_plan"] + random.uniform(-0.04, 0.04), 2)
+
+    d["trend_q"] = (d["trend_q"] + [d["q_actual"]])[-120:]
+
+def tick_gate_trend():
+    gg = get_gate()
+    open_pct = gg["open_pct"]
+    st.session_state.trend_gate = (st.session_state.trend_gate + [open_pct])[-120:]
+
+def apply_auto_control_if_running():
+    ss = st.session_state
+    if ss.mode != "REMOTE AUTOMATIC":
+        return
+    if ss.auto_state != "RUNNING":
+        return
+    if blocked():
+        ss.auto_state = "STOPPED"
+        return
+    d = get_dir()
+    # dummy target opening derived from H_plan (direction-level)
+    target = int(max(0, min(100, 20 + d["h_plan"] * 30)))
+    step_all_gates_in_direction(target)
+
+def apply_program_control_if_running():
+    ss = st.session_state
+    if ss.mode != "REMOTE PROGRAM":
+        return
+    if not ss.program_running:
+        return
+    if blocked():
+        ss.program_running = False
+        return
+
+    prog = PROGRAMS.get(ss.program_name)
+    if not prog:
+        return
+
+    # direction-level season display
+    ss.season = prog["season"]
+
+    # optional q_plan bias (slow)
+    d = get_dir()
+    if prog["q_plan_bias"] > -900:
+        d["q_plan"] = round(max(5.0, min(20.0, d["q_plan"] + prog["q_plan_bias"] * 0.01)), 2)
+
+    pt = PATTERNS.get(ss.pattern_sel, PATTERNS["A"])
+    if ss.pattern_sel == "HOLD":
+        return
+
+    target = int(pt["target_open_base"] + pt["target_open_gain"] * (d["q_plan"] - 10.0))
+    target = max(0, min(100, target))
+    step_all_gates_in_direction(target)
+
+# tick once per render
+tick_direction_signals()
+apply_auto_control_if_running()
+apply_program_control_if_running()
+tick_gate_trend()
+
+# =========================
+# SVG: Gate overview building (same style, no external images)
 # =========================
 def overview_building_svg(
     station: str,
@@ -325,7 +537,7 @@ def overview_building_svg(
         outline = "#60a5fa" if sel else stroke
         glow = 'filter="url(#shadow)"' if sel else ''
 
-        gate_dot = bad if alarm_active else ok
+        gate_dot = bad if alarm_active else "#34d399"
 
         svg_parts.append(f"""
   <g {glow}>
@@ -334,21 +546,13 @@ def overview_building_svg(
     <rect x="{x+26}" y="{bay_y+138}" width="{bay_w-52}" height="28" rx="12" fill="url(#water)" opacity="0.95"/>
 
     <rect x="{x+bay_w*0.36}" y="{bay_y+26}" width="{bay_w*0.28}" height="130" rx="12" fill="{panel}" stroke="{stroke}"/>
-
-    <rect x="{x+bay_w*0.36+6}" y="{leaf_y}" width="{bay_w*0.28-12}" height="70" rx="12" fill="{gate_fill}" stroke="{gate_edge}" opacity="0.92"/>
-    <path d="M{x+bay_w*0.36+12} {leaf_y+16} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.7"/>
-    <path d="M{x+bay_w*0.36+12} {leaf_y+34} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.5"/>
-    <path d="M{x+bay_w*0.36+12} {leaf_y+52} H{x+bay_w*0.64-12}" stroke="#93c5fd" stroke-width="3" opacity="0.35"/>
+    <rect x="{x+bay_w*0.36+6}" y="{leaf_y}" width="{bay_w*0.28-12}" height="70" rx="12" fill="#1f6feb" stroke="#60a5fa" opacity="0.92"/>
 
     <circle cx="{x+24}" cy="{bay_y+26}" r="6" fill="{gate_dot}" opacity="0.9"/>
     <text x="{x+40}" y="{bay_y+30}" fill="{txt}" font-size="13" font-weight="900">{gname}</text>
 
     <text x="{x+bay_w/2}" y="{bay_y+bay_h+28}" fill="{txt}" font-size="13" font-weight="900" text-anchor="middle">{open_pct}%</text>
     <text x="{x+bay_w/2}" y="{bay_y+bay_h+48}" fill="{sub}" font-size="12" font-weight="800" text-anchor="middle">{open_m:.2f} m</text>
-
-    <rect x="{x+bay_w*0.18}" y="{bay_y+bay_h+60}" width="{bay_w*0.64}" height="10" rx="999" fill="{panel}" stroke="{stroke}"/>
-    <rect x="{x+bay_w*0.18}" y="{bay_y+bay_h+60}" width="{bay_w*0.64*(open_pct/100.0)}" height="10" rx="999"
-          fill="url(#water)" opacity="0.95"/>
   </g>
 """)
 
@@ -356,184 +560,37 @@ def overview_building_svg(
     return "\n".join(svg_parts)
 
 # =========================
-# Data model (dummy)
+# SVG: single gate for manual intuitive control
 # =========================
-def build_demo_assets():
-    return {
-        "BBT15": {
-            "BaratMainGate": ["Gate1", "Gate2", "Gate3", "Gate4"],
-            "WastewayGate": ["Gate1", "Gate2", "Gate3"],
-            "CiberangMainGate": ["Gate1", "Gate2"],
-        },
-        "BUT10": {
-            "UtaraMainGate": ["Gate1", "Gate2", "Gate3", "Gate4"],
-            "WaruGate": ["Gate1", "Gate2"],
-        }
-    }
+def gate_svg(open_pct: int):
+    y = 120 - int(open_pct * 0.8)
+    y = max(40, min(120, y))
+    return f"""
+<svg width="100%" height="100%" viewBox="0 0 520 260" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="water_d" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#0ea5e9" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#2563eb" stop-opacity="0.72"/>
+    </linearGradient>
+    <filter id="sh_d" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
 
-ASSETS = build_demo_assets()
+  <rect x="22" y="20" width="476" height="220" rx="18" fill="#0b1220" stroke="#223049"/>
+  <rect x="150" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
+  <rect x="324" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
 
-def init_state():
-    ss = st.session_state
+  <rect x="80" y="170" width="360" height="44" rx="12" fill="#0a1020" stroke="#223049"/>
+  <rect x="92" y="182" width="336" height="30" rx="10" fill="url(#water_d)" opacity="0.95"/>
 
-    if "station" not in ss: ss.station = "BBT15"
-    if "direction" not in ss: ss.direction = "BaratMainGate"
-    if "mode" not in ss: ss.mode = "REMOTE AUTOMATIC"
-    if "selected_gate" not in ss: ss.selected_gate = "Gate1"
+  <rect x="220" y="62" width="80" height="140" rx="10" fill="#0a1020" stroke="#223049"/>
 
-    if "remote_enabled" not in ss: ss.remote_enabled = True
-    if "comm_main" not in ss: ss.comm_main = "NORMAL"
-    if "comm_backup" not in ss: ss.comm_backup = "STANDBY"
-
-    if "commercial_power" not in ss: ss.commercial_power = True
-    if "gen_state" not in ss: ss.gen_state = "OFF"
-
-    if "prot" not in ss:
-        ss.prot = {
-            "ELR": False,
-            "Overload": False,
-            "Over Torque Open": False,
-            "Over Torque Close": False,
-            "Control De-Energize": False,
-        }
-
-    if "q_plan" not in ss: ss.q_plan = 12.50
-    if "h_plan" not in ss: ss.h_plan = 1.65
-    if "q_actual" not in ss: ss.q_actual = 12.72
-    if "h_actual" not in ss: ss.h_actual = 1.63
-
-    if "pattern" not in ss: ss.pattern = "A"
-    if "season" not in ss: ss.season = "Dry"
-
-    if "control_cycle" not in ss: ss.control_cycle = "STOPPED"
-    if "trend_large" not in ss: ss.trend_large = False
-
-    if "cctv_camera" not in ss: ss.cctv_camera = "CCTV — Gate Area"
-
-    # Remote Program state
-    if "program_name" not in ss: ss.program_name = "P-01 Dry / Standard"
-    if "pattern_sel" not in ss: ss.pattern_sel = "A"
-    if "program_running" not in ss: ss.program_running = False
-    if "program_last_applied" not in ss: ss.program_last_applied = "—"
-    if "pattern_last_changed" not in ss: ss.pattern_last_changed = "—"
-
-    if "gate_state" not in ss:
-        gs = {}
-        for stn, dirs in ASSETS.items():
-            for d, gates in dirs.items():
-                for g in gates:
-                    key = f"{stn}/{d}/{g}"
-                    open_pct = random.choice([0, 10, 25, 40, 55, 70, 85])
-                    max_open_m = random.choice([2.00, 1.80, 1.60])
-                    gs[key] = {
-                        "open_pct": open_pct,
-                        "max_open_m": max_open_m,
-                        "motion": "STOP",
-                        "last_cmd": "—",
-                        "last_cmd_time": "—",
-                    }
-        ss.gate_state = gs
-
-    if "trend_gate" not in ss:
-        ss.trend_gate = [random.randint(0, 100) for _ in range(120)]
-        ss.trend_q = [round(ss.q_actual + 0.12*math.sin(i/12) + random.uniform(-0.05,0.05), 2) for i in range(120)]
-
-init_state()
-
-# =========================
-# Logic helpers
-# =========================
-def current_gate_key():
-    ss = st.session_state
-    return f"{ss.station}/{ss.direction}/{ss.selected_gate}"
-
-def get_gate():
-    return st.session_state.gate_state[current_gate_key()]
-
-def blocked():
-    ss = st.session_state
-    if ss.mode == "LOCAL (LCP ACTIVE)":
-        return True
-    if any(ss.prot.values()):
-        return True
-    if ss.gen_state == "ERROR":
-        return True
-    if not ss.remote_enabled:
-        return True
-    return False
-
-def send_cmd(cmd: str):
-    now = datetime.now().strftime("%H:%M:%S")
-    gg = get_gate()
-    gg["last_cmd"] = cmd
-    gg["last_cmd_time"] = now
-
-def step_gate_toward(target_pct: int):
-    gg = get_gate()
-    p = gg["open_pct"]
-    if p < target_pct:
-        p = min(100, p + 2)
-    elif p > target_pct:
-        p = max(0, p - 2)
-    gg["open_pct"] = p
-
-def tick_signals():
-    ss = st.session_state
-    ss.h_plan = compute_h_plan_from_qplan(ss.q_plan)
-
-    drift = 0.02 if ss.control_cycle == "RUNNING" else 0.00
-    ss.q_actual = round(max(0.0, ss.q_actual + random.uniform(-0.05, 0.05) - (ss.q_actual - ss.q_plan)*drift), 2)
-
-    gg = get_gate()
-    open_pct = gg["open_pct"]
-    base_h = ss.h_plan + (open_pct - 50) * 0.002
-    ss.h_actual = round(base_h + random.uniform(-0.02, 0.02), 2)
-
-    ss.trend_gate = (ss.trend_gate + [open_pct])[-120:]
-    ss.trend_q = (ss.trend_q + [ss.q_actual])[-120:]
-
-def apply_remote_program_control():
-    ss = st.session_state
-    if ss.mode != "REMOTE PROGRAM":
-        return
-    if not ss.program_running:
-        return
-    if blocked():
-        ss.program_running = False
-        ss.control_cycle = "STOPPED"
-        return
-
-    prog = PROGRAMS.get(ss.program_name)
-    if not prog:
-        return
-
-    # Update season from program
-    ss.season = prog["season"]
-
-    # Pattern is selected by operator via dropdown (priority over program default)
-    ss.pattern = ss.pattern_sel
-
-    # Optional: slowly bias Q_plan (dummy). Maintenance does not modify Q_plan.
-    if prog["q_plan_bias"] > -900:
-        ss.q_plan = round(max(5.0, min(20.0, ss.q_plan + prog["q_plan_bias"] * 0.01)), 2)
-
-    pt = PATTERNS.get(ss.pattern, PATTERNS["A"])
-
-    # Target opening derived from Q_plan (dummy)
-    target = int(pt["target_open_base"] + pt["target_open_gain"] * (ss.q_plan - 10.0))
-    target = max(0, min(100, target))
-
-    # HOLD means no movement
-    if ss.pattern == "HOLD":
-        ss.program_last_applied = datetime.now().strftime("%H:%M:%S")
-        return
-
-    step_gate_toward(target)
-    ss.program_last_applied = datetime.now().strftime("%H:%M:%S")
-
-# Run one tick per page render
-tick_signals()
-apply_remote_program_control()
+  <g filter="url(#sh_d)">
+    <rect x="226" y="{y}" width="68" height="90" rx="10" fill="#1f6feb" opacity="0.92" stroke="#60a5fa"/>
+  </g>
+</svg>
+"""
 
 # =========================
 # Sidebar
@@ -555,30 +612,7 @@ st.sidebar.radio(
     key="mode"
 )
 
-# Remote Program UI (shown only in REMOTE PROGRAM mode)
 st.sidebar.markdown("---")
-if st.session_state.mode == "REMOTE PROGRAM":
-    st.sidebar.markdown("### Remote Program (dummy)")
-    st.sidebar.selectbox("Program", list(PROGRAMS.keys()), key="program_name")
-    p = PROGRAMS[st.session_state.program_name]
-    st.sidebar.caption(p["desc"])
-
-    # Pattern dropdown (operator selection)
-    st.sidebar.selectbox("Pattern", list(PATTERNS.keys()), key="pattern_sel")
-    st.sidebar.caption(f"Pattern detail: {PATTERNS[st.session_state.pattern_sel]['desc']}")
-
-    colA, colB = st.sidebar.columns(2)
-    with colA:
-        if st.sidebar.button("▶ RUN", use_container_width=True, disabled=blocked()):
-            st.session_state.program_running = True
-            st.session_state.control_cycle = "RUNNING"
-            send_cmd(f"PROGRAM RUN: {st.session_state.program_name} / PATTERN {st.session_state.pattern_sel}")
-    with colB:
-        if st.sidebar.button("⏹ STOP", use_container_width=True):
-            st.session_state.program_running = False
-            st.session_state.control_cycle = "STOPPED"
-            send_cmd("PROGRAM STOP")
-
 st.sidebar.markdown("### Comms / Access (dummy)")
 st.session_state.remote_enabled = st.sidebar.checkbox("Remote enabled", value=st.session_state.remote_enabled)
 st.session_state.comm_main = st.sidebar.selectbox("Main comm", ["NORMAL", "DOWN"], index=["NORMAL","DOWN"].index(st.session_state.comm_main))
@@ -595,8 +629,10 @@ st.sidebar.markdown("### Protection / Alarms")
 for k in list(st.session_state.prot.keys()):
     st.session_state.prot[k] = st.sidebar.checkbox(k, value=st.session_state.prot[k])
 
-st.sidebar.markdown("### Plan (dummy)")
-st.session_state.q_plan = round(st.sidebar.slider("Q_plan (target) [m³/s]", 5.0, 20.0, float(st.session_state.q_plan), 0.05), 2)
+# Direction-level plan slider (still editable, but now affects Direction)
+st.sidebar.markdown("### Direction Plan (dummy)")
+d = get_dir()
+d["q_plan"] = round(st.sidebar.slider("Q_plan (Direction target) [m³/s]", 5.0, 20.0, float(d["q_plan"]), 0.05), 2)
 
 st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("Auto refresh (1s)", value=False)
@@ -625,7 +661,7 @@ with h4:
 st.markdown("")
 
 # =========================
-# Gate Overview (SVG rendered via components.html)
+# Gate Overview + (Direction-level) cards placed around it
 # =========================
 gates = ASSETS[st.session_state.station][st.session_state.direction]
 if st.session_state.selected_gate not in gates:
@@ -633,6 +669,80 @@ if st.session_state.selected_gate not in gates:
 
 alarm_active = any(st.session_state.prot.values())
 
+# --- Direction-level Control Targets (Plan vs Actual)
+# Requirement: show it near Gate Overview, not gate-specific.
+# Also: hide it in REMOTE MANUAL/AUTO/PROGRAM per your instruction.
+if mode == "LOCAL (LCP ACTIVE)":
+    dd = get_dir()
+    dq = dd["q_actual"] - dd["q_plan"]
+    pq = pct_delta(dd["q_plan"], dd["q_actual"])
+    dh = dd["h_actual"] - dd["h_plan"]
+    ph = pct_delta(dd["h_plan"], dd["h_actual"])
+
+    card_start("Control Targets (Plan vs Actual)",
+               "Direction-level (NOT gate-level). Shown only in LOCAL screen per latest requirement.",
+               "🎯")
+    row("Q_plan (Direction target)", f"{dd['q_plan']:.2f} m³/s")
+    row("Q_actual (Direction)", f"{dd['q_actual']:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)", dev_badge(abs(pq)))
+    diverging_bar(pq, scale_pct=10.0)
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    row("H_plan (Direction target)", f"{dd['h_plan']:.2f} m")
+    row("H_actual (Direction)", f"{dd['h_actual']:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)", dev_badge(abs(ph)))
+    diverging_bar(ph, scale_pct=10.0)
+    card_end()
+    st.markdown("")
+
+# --- Mode top controls (Gateより上位)
+if mode == "REMOTE AUTOMATIC":
+    card_start("Automatic Mode Control",
+               "Direction-level execution controls (not gate-specific).",
+               "🤖")
+    b1, b2, b3 = st.columns(3, gap="large")
+    with b1:
+        if st.button("▶ Start", use_container_width=True, disabled=is_blocked):
+            st.session_state.auto_state = "RUNNING"
+    with b2:
+        if st.button("⏸ Pause", use_container_width=True):
+            st.session_state.auto_state = "PAUSED"
+    with b3:
+        if st.button("⏹ Stop", use_container_width=True):
+            st.session_state.auto_state = "STOPPED"
+    row("Auto state", st.session_state.auto_state,
+        None,
+        "hmi-ok" if st.session_state.auto_state=="RUNNING"
+        else "hmi-warn" if st.session_state.auto_state=="PAUSED"
+        else "hmi-bad"
+    )
+    card_end()
+    st.markdown("")
+
+if mode == "REMOTE PROGRAM":
+    card_start("Program Mode Control",
+               "Direction-level program execution controls (not gate-specific).",
+               "🧩")
+    c1, c2 = st.columns([1.2, 1.0], gap="large")
+    with c1:
+        st.selectbox("Program", list(PROGRAMS.keys()), key="program_name")
+        st.caption(PROGRAMS[st.session_state.program_name]["desc"])
+    with c2:
+        st.selectbox("Pattern", list(PATTERNS.keys()), key="pattern_sel")
+        st.caption(f"Pattern detail: {PATTERNS[st.session_state.pattern_sel]['desc']}")
+    bb1, bb2 = st.columns(2, gap="large")
+    with bb1:
+        if st.button("▶ RUN", use_container_width=True, disabled=is_blocked):
+            st.session_state.program_running = True
+            st.session_state.season = PROGRAMS[st.session_state.program_name]["season"]
+    with bb2:
+        if st.button("⏹ STOP", use_container_width=True):
+            st.session_state.program_running = False
+    row("Program state", "RUNNING" if st.session_state.program_running else "STOPPED",
+        None, "hmi-ok" if st.session_state.program_running else "hmi-bad"
+    )
+    row("Season", st.session_state.season)
+    card_end()
+    st.markdown("")
+
+# --- Gate Overview
 card_start(
     "Gate Overview",
     "Code-generated schematic (no image files). Select a gate below to open detail panels.",
@@ -691,61 +801,64 @@ card_end()
 st.markdown("")
 
 # =========================
-# Detail area
+# Detail area (3 columns)
 # =========================
 g = get_gate()
 opening_pct = g["open_pct"]
 opening_m = opening_m_from_pct(opening_pct, g["max_open_m"])
 
-def gate_svg(open_pct: int):
-    y = 120 - int(open_pct * 0.8)
-    y = max(40, min(120, y))
-    return f"""
-<svg width="100%" height="100%" viewBox="0 0 520 260" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="water_d" x1="0" x2="0" y1="0" y2="1">
-      <stop offset="0" stop-color="#0ea5e9" stop-opacity="0.92"/>
-      <stop offset="1" stop-color="#2563eb" stop-opacity="0.72"/>
-    </linearGradient>
-    <filter id="sh_d" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.35"/>
-    </filter>
-  </defs>
-
-  <rect x="22" y="20" width="476" height="220" rx="18" fill="#0b1220" stroke="#223049"/>
-
-  <rect x="150" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
-  <rect x="324" y="40" width="46" height="170" rx="10" fill="#111c2e" stroke="#223049"/>
-
-  <rect x="80" y="170" width="360" height="44" rx="12" fill="#0a1020" stroke="#223049"/>
-  <rect x="92" y="182" width="336" height="30" rx="10" fill="url(#water_d)" opacity="0.95"/>
-
-  <rect x="220" y="62" width="80" height="140" rx="10" fill="#0a1020" stroke="#223049"/>
-
-  <g filter="url(#sh_d)">
-    <rect x="226" y="{y}" width="68" height="90" rx="10" fill="#1f6feb" opacity="0.92" stroke="#60a5fa"/>
-    <path d="M232 {y+18} H288" stroke="#93c5fd" stroke-width="3" opacity="0.75"/>
-    <path d="M232 {y+36} H288" stroke="#93c5fd" stroke-width="3" opacity="0.55"/>
-    <path d="M232 {y+54} H288" stroke="#93c5fd" stroke-width="3" opacity="0.40"/>
-  </g>
-</svg>
-"""
-
-def panel_gate_status():
+def panel_gate_status_and_manual_controls():
     card_start(f"Gate Status — {st.session_state.selected_gate}",
-               "Schematic + Opening bars + CCTV (dummy).", "🚪")
+               "Schematic + Opening. Manual mode provides intuitive sliders for % and meters.",
+               "🚪")
 
     components.html(gate_svg(opening_pct), height=290, scrolling=False)
 
     row("Opening (Percent)", f"{opening_pct}%")
     bar(opening_pct)
-
-    meter_percent = int(round((opening_m / g["max_open_m"]) * 100)) if g["max_open_m"] > 0 else 0
     row("Opening (Meters)", f"{opening_m:.2f} m  (max {g['max_open_m']:.2f} m)")
-    bar(meter_percent)
+    bar(int(round((opening_m / g["max_open_m"]) * 100)) if g["max_open_m"] > 0 else 0)
+
+    # REMOTE MANUAL: provide direct % and meters adjustment (direction targets are NOT shown)
+    if st.session_state.mode == "REMOTE MANUAL":
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        pill("BLOCKED" if is_blocked else "READY",
+             "hmi-pill hmi-bad" if is_blocked else "hmi-pill hmi-ok")
+
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            pct = st.slider("Manual Opening (%)", 0, 100, int(opening_pct), 1, key="manual_pct")
+            if st.button("Apply %", use_container_width=True, disabled=is_blocked):
+                send_cmd(f"MANUAL SET {pct}%")
+                set_gate_open_pct(pct)
+
+        with c2:
+            mm = st.slider("Manual Opening (m)", 0.0, float(g["max_open_m"]), float(opening_m), 0.01, key="manual_m")
+            if st.button("Apply m", use_container_width=True, disabled=is_blocked):
+                pct2 = opening_pct_from_m(mm, g["max_open_m"])
+                send_cmd(f"MANUAL SET {mm:.2f}m ({pct2}%)")
+                set_gate_open_pct(pct2)
+
+        # simple jog buttons (intuitive)
+        j1, j2, j3, j4 = st.columns(4, gap="small")
+        with j1:
+            if st.button("−10%", use_container_width=True, disabled=is_blocked):
+                send_cmd("JOG -10%")
+                set_gate_open_pct(opening_pct - 10)
+        with j2:
+            if st.button("−2%", use_container_width=True, disabled=is_blocked):
+                send_cmd("JOG -2%")
+                set_gate_open_pct(opening_pct - 2)
+        with j3:
+            if st.button("+2%", use_container_width=True, disabled=is_blocked):
+                send_cmd("JOG +2%")
+                set_gate_open_pct(opening_pct + 2)
+        with j4:
+            if st.button("+10%", use_container_width=True, disabled=is_blocked):
+                send_cmd("JOG +10%")
+                set_gate_open_pct(opening_pct + 10)
 
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-
     st.markdown("<div class='hmi-sub' style='margin-top:2px;'>CCTV</div>", unsafe_allow_html=True)
     st.selectbox(
         "CCTV Camera",
@@ -754,110 +867,6 @@ def panel_gate_status():
         label_visibility="collapsed",
     )
     cctv_box(st.session_state.cctv_camera)
-
-    card_end()
-
-def panel_plan_actual():
-    ss = st.session_state
-
-    dq = ss.q_actual - ss.q_plan
-    pq = pct_delta(ss.q_plan, ss.q_actual)
-
-    dh = ss.h_actual - ss.h_plan
-    ph = pct_delta(ss.h_plan, ss.h_actual)
-
-    card_start("Control Targets (Plan vs Actual)",
-               "Plan is centered; Actual deviation is shown as shortage/excess (dummy).", "🎯")
-
-    row("Q_plan (target)", f"{ss.q_plan:.2f} m³/s")
-    row("Q_actual", f"{ss.q_actual:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)", dev_badge(abs(pq)))
-    diverging_bar(pq, scale_pct=10.0)
-
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-    row("H_plan (target)", f"{ss.h_plan:.2f} m")
-    row("H_actual", f"{ss.h_actual:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)", dev_badge(abs(ph)))
-    diverging_bar(ph, scale_pct=10.0)
-
-    card_end()
-
-def panel_auto_control():
-    card_start("Automatic Control", "Start / Pause / Stop. Start applies one dummy cycle while running.", "🤖")
-
-    b1, b2, b3 = st.columns(3, gap="large")
-    with b1:
-        if st.button("▶ Start", use_container_width=True, disabled=is_blocked):
-            st.session_state.control_cycle = "RUNNING"
-            send_cmd("AUTO START")
-            pseudo_target_pct = int(max(0, min(100, 20 + st.session_state.h_plan * 30)))
-            step_gate_toward(pseudo_target_pct)
-
-    with b2:
-        if st.button("⏸ Pause", use_container_width=True):
-            st.session_state.control_cycle = "PAUSED"
-            send_cmd("AUTO PAUSE")
-
-    with b3:
-        if st.button("⏹ Stop", use_container_width=True):
-            st.session_state.control_cycle = "STOPPED"
-            send_cmd("AUTO STOP")
-
-    row("Control state", st.session_state.control_cycle,
-        None,
-        "hmi-ok" if st.session_state.control_cycle=="RUNNING"
-        else "hmi-warn" if st.session_state.control_cycle=="PAUSED"
-        else "hmi-bad"
-    )
-    card_end()
-
-def panel_manual_command():
-    card_start("Manual Command", "Direct control (Open / Stop / Close).", "🕹️")
-    pill("BLOCKED" if is_blocked else "READY", "hmi-pill hmi-bad" if is_blocked else "hmi-pill hmi-ok")
-    b1, b2, b3 = st.columns(3, gap="large")
-    with b1:
-        if st.button("⬆ Open", use_container_width=True, disabled=is_blocked):
-            send_cmd("OPEN")
-            step_gate_toward(100)
-    with b2:
-        if st.button("■ Stop", use_container_width=True, disabled=is_blocked):
-            send_cmd("STOP")
-    with b3:
-        if st.button("⬇ Close", use_container_width=True, disabled=is_blocked):
-            send_cmd("CLOSE")
-            step_gate_toward(0)
-    card_end()
-
-def panel_program_control():
-    ss = st.session_state
-    prog = PROGRAMS.get(ss.program_name, None)
-    pt = PATTERNS.get(ss.pattern_sel, None)
-
-    card_start("Program Control", "Select Program + Pattern, then Run/Stop (dummy).", "🧩")
-
-    row("Program", ss.program_name)
-    if prog:
-        row("Program description", prog["desc"])
-        row("Season (from program)", prog["season"])
-
-    row("Pattern (selected)", ss.pattern_sel)
-    if pt:
-        row("Pattern description", pt["desc"])
-  
-    row("Program state", "RUNNING" if ss.program_running else "STOPPED",
-        None, "hmi-ok" if ss.program_running else "hmi-bad"
-    )
- 
-    b1, b2 = st.columns(2, gap="large")
-    with b1:
-        if st.button("▶ RUN (panel)", use_container_width=True, disabled=is_blocked):
-            ss.program_running = True
-            ss.control_cycle = "RUNNING"
-            send_cmd(f"PROGRAM RUN: {ss.program_name} / PATTERN {ss.pattern_sel}")
-    with b2:
-        if st.button("⏹ STOP (panel)", use_container_width=True):
-            ss.program_running = False
-            ss.control_cycle = "STOPPED"
-            send_cmd("PROGRAM STOP")
 
     card_end()
 
@@ -880,46 +889,27 @@ def panel_power():
     card_end()
 
 def panel_trends():
-    card_start("Historical Trends", "Gate Opening and Discharge (dummy). Large view toggle for readability.", "📈")
-
+    card_start("Historical Trends", "Gate Opening + Direction Discharge (dummy).", "📈")
     st.session_state.trend_large = st.toggle("Large view", value=st.session_state.trend_large)
     h = 320 if st.session_state.trend_large else 180
 
+    d = get_dir()
     c1, c2 = st.columns(2, gap="large")
     with c1:
         st.line_chart(st.session_state.trend_gate, height=h)
         pill(f"Gate: {opening_pct}%", "hmi-pill hmi-ok")
     with c2:
-        st.line_chart(st.session_state.trend_q, height=h)
-        pill(f"Discharge(Q): {st.session_state.q_actual:.2f} m³/s", "hmi-pill hmi-ok")
-
+        st.line_chart(d["trend_q"], height=h)
+        pill(f"Direction Q: {d['q_actual']:.2f} m³/s", "hmi-pill hmi-ok")
     card_end()
 
-# =========================
-# Layout per mode
-# =========================
 left, mid, right = st.columns([1.10, 1.25, 1.05], gap="large")
-
 with left:
-    panel_gate_status()
-
+    panel_gate_status_and_manual_controls()
 with mid:
-    panel_plan_actual()
-
-    if mode == "REMOTE AUTOMATIC":
-        panel_auto_control()
-    elif mode == "REMOTE MANUAL":
-        panel_manual_command()
-    elif mode == "REMOTE PROGRAM":
-        panel_program_control()
-    else:
-        card_start("Access / Lock", "Local LCP active (monitor-only).", "🔒")
-        pill("LOCAL (LCP ACTIVE) — Remote operations disabled", "hmi-pill hmi-bad")
-        row("Remote enabled", "YES" if st.session_state.remote_enabled else "NO")
-        card_end()
-
+    # IMPORTANT: per your request, there is NO per-gate "Control Targets (Plan vs Actual)" anywhere.
+    # Mid area focuses on trends and mode-independent information.
     panel_trends()
-
 with right:
     panel_alarms()
     panel_power()
