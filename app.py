@@ -176,14 +176,14 @@ def diverging_bar(dev_pct: float, scale_pct: float = 10.0):
         st.markdown(f"""
 <div class="div-wrap">
   <div class="div-center"></div>
-  <div class="div-fill-pos" style="width:{half}%;"></div>
+  <div class="div-fill-pos" style='width:{half}%;'></div>
 </div>
 """, unsafe_allow_html=True)
     else:
         st.markdown(f"""
 <div class="div-wrap">
   <div class="div-center"></div>
-  <div class="div-fill-neg" style="width:{half}%;"></div>
+  <div class="div-fill-neg" style='width:{half}%;'></div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -454,7 +454,35 @@ apply_program_control_if_running()
 tick_gate_trend()
 
 # =========================
-# SVG: Gate overview building (same style, no external images)
+# Direction Plan vs Actual Panel (REMOTE AUTOMATIC only)
+# =========================
+def panel_direction_plan_actual():
+    dd = get_dir()
+    dq = dd["q_actual"] - dd["q_plan"]
+    pq = pct_delta(dd["q_plan"], dd["q_actual"])
+    dh = dd["h_actual"] - dd["h_plan"]
+    ph = pct_delta(dd["h_plan"], dd["h_actual"])
+
+    card_start(
+        "Control Targets (Plan vs Actual)",
+        "Direction-level (NOT gate-level). Shown only in REMOTE AUTOMATIC.",
+        "🎯"
+    )
+
+    row("Q_plan (Direction target)", f"{dd['q_plan']:.2f} m³/s")
+    row("Q_actual (Direction)", f"{dd['q_actual']:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)", dev_badge(abs(pq)))
+    diverging_bar(pq, scale_pct=10.0)
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+    row("H_plan (Direction target)", f"{dd['h_plan']:.2f} m")
+    row("H_actual (Direction)", f"{dd['h_actual']:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)", dev_badge(abs(ph)))
+    diverging_bar(ph, scale_pct=10.0)
+
+    card_end()
+
+# =========================
+# SVG: Gate overview building (no external images)
 # =========================
 def overview_building_svg(
     station: str,
@@ -480,8 +508,6 @@ def overview_building_svg(
     panel = "#0a1020"
     water1 = "#0ea5e9"
     water2 = "#2563eb"
-    gate_fill = "#1f6feb"
-    gate_edge = "#60a5fa"
     txt = "#e5e7eb"
     sub = "#94a3b8"
     bad = "#fb7185"
@@ -530,14 +556,10 @@ def overview_building_svg(
         x = margin + i*(bay_w + bay_gap)
         sel = (gname == selected_gate)
 
-        leaf_min_y = bay_y + 24
-        leaf_max_y = bay_y + 110
-        leaf_y = leaf_max_y - int((leaf_max_y - leaf_min_y) * (open_pct/100.0))
-
         outline = "#60a5fa" if sel else stroke
         glow = 'filter="url(#shadow)"' if sel else ''
 
-        gate_dot = bad if alarm_active else "#34d399"
+        gate_dot = bad if alarm_active else ok
 
         svg_parts.append(f"""
   <g {glow}>
@@ -546,7 +568,7 @@ def overview_building_svg(
     <rect x="{x+26}" y="{bay_y+138}" width="{bay_w-52}" height="28" rx="12" fill="url(#water)" opacity="0.95"/>
 
     <rect x="{x+bay_w*0.36}" y="{bay_y+26}" width="{bay_w*0.28}" height="130" rx="12" fill="{panel}" stroke="{stroke}"/>
-    <rect x="{x+bay_w*0.36+6}" y="{leaf_y}" width="{bay_w*0.28-12}" height="70" rx="12" fill="#1f6feb" stroke="#60a5fa" opacity="0.92"/>
+    <rect x="{x+bay_w*0.36+6}" y="{bay_y+40}" width="{bay_w*0.28-12}" height="70" rx="12" fill="#1f6feb" stroke="#60a5fa" opacity="0.92"/>
 
     <circle cx="{x+24}" cy="{bay_y+26}" r="6" fill="{gate_dot}" opacity="0.9"/>
     <text x="{x+40}" y="{bay_y+30}" fill="{txt}" font-size="13" font-weight="900">{gname}</text>
@@ -656,41 +678,18 @@ with h2:
 with h3:
     pill(f"GEN: {st.session_state.gen_state}", "hmi-pill hmi-ok" if st.session_state.gen_state != "ERROR" else "hmi-pill hmi-bad")
 with h4:
-    pill(f"LAST UPDATE: {datetime.now().strftime('%H:%M:%S')}", "hmi-pill")
+    pill(f"LAST UPDATE: {datetime.now().strftime("%H:%M:%S")}", "hmi-pill")
 
 st.markdown("")
 
 # =========================
-# Gate Overview + (Direction-level) cards placed around it
+# Gate Overview + Mode-level controls above it
 # =========================
 gates = ASSETS[st.session_state.station][st.session_state.direction]
 if st.session_state.selected_gate not in gates:
     st.session_state.selected_gate = gates[0]
 
 alarm_active = any(st.session_state.prot.values())
-
-# --- Direction-level Control Targets (Plan vs Actual)
-# Requirement: show it near Gate Overview, not gate-specific.
-# Also: hide it in REMOTE MANUAL/AUTO/PROGRAM per your instruction.
-if mode == "LOCAL (LCP ACTIVE)":
-    dd = get_dir()
-    dq = dd["q_actual"] - dd["q_plan"]
-    pq = pct_delta(dd["q_plan"], dd["q_actual"])
-    dh = dd["h_actual"] - dd["h_plan"]
-    ph = pct_delta(dd["h_plan"], dd["h_actual"])
-
-    card_start("Control Targets (Plan vs Actual)",
-               "Direction-level (NOT gate-level). Shown only in LOCAL screen per latest requirement.",
-               "🎯")
-    row("Q_plan (Direction target)", f"{dd['q_plan']:.2f} m³/s")
-    row("Q_actual (Direction)", f"{dd['q_actual']:.2f} m³/s", f"Δ {dq:+.2f} ({pq:+.1f}%)", dev_badge(abs(pq)))
-    diverging_bar(pq, scale_pct=10.0)
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    row("H_plan (Direction target)", f"{dd['h_plan']:.2f} m")
-    row("H_actual (Direction)", f"{dd['h_actual']:.2f} m", f"Δ {dh:+.2f} ({ph:+.1f}%)", dev_badge(abs(ph)))
-    diverging_bar(ph, scale_pct=10.0)
-    card_end()
-    st.markdown("")
 
 # --- Mode top controls (Gateより上位)
 if mode == "REMOTE AUTOMATIC":
@@ -716,6 +715,10 @@ if mode == "REMOTE AUTOMATIC":
     card_end()
     st.markdown("")
 
+    # NEW: Plan vs Actual shown under Automatic Mode Control
+    panel_direction_plan_actual()
+    st.markdown("")
+
 if mode == "REMOTE PROGRAM":
     card_start("Program Mode Control",
                "Direction-level program execution controls (not gate-specific).",
@@ -726,7 +729,7 @@ if mode == "REMOTE PROGRAM":
         st.caption(PROGRAMS[st.session_state.program_name]["desc"])
     with c2:
         st.selectbox("Pattern", list(PATTERNS.keys()), key="pattern_sel")
-        st.caption(f"Pattern detail: {PATTERNS[st.session_state.pattern_sel]['desc']}")
+        st.caption(f"Pattern detail: {PATTERNS[st.session_state.pattern_sel]["desc"]}")
     bb1, bb2 = st.columns(2, gap="large")
     with bb1:
         if st.button("▶ RUN", use_container_width=True, disabled=is_blocked):
@@ -816,7 +819,7 @@ def panel_gate_status_and_manual_controls():
 
     row("Opening (Percent)", f"{opening_pct}%")
     bar(opening_pct)
-    row("Opening (Meters)", f"{opening_m:.2f} m  (max {g['max_open_m']:.2f} m)")
+    row("Opening (Meters)", f"{opening_m:.2f} m  (max {g["max_open_m"]:.2f} m)")
     bar(int(round((opening_m / g["max_open_m"]) * 100)) if g["max_open_m"] > 0 else 0)
 
     # REMOTE MANUAL: provide direct % and meters adjustment (direction targets are NOT shown)
@@ -900,15 +903,13 @@ def panel_trends():
         pill(f"Gate: {opening_pct}%", "hmi-pill hmi-ok")
     with c2:
         st.line_chart(d["trend_q"], height=h)
-        pill(f"Direction Q: {d['q_actual']:.2f} m³/s", "hmi-pill hmi-ok")
+        pill(f"Direction Q: {d["q_actual"]:.2f} m³/s", "hmi-pill hmi-ok")
     card_end()
 
 left, mid, right = st.columns([1.10, 1.25, 1.05], gap="large")
 with left:
     panel_gate_status_and_manual_controls()
 with mid:
-    # IMPORTANT: per your request, there is NO per-gate "Control Targets (Plan vs Actual)" anywhere.
-    # Mid area focuses on trends and mode-independent information.
     panel_trends()
 with right:
     panel_alarms()
