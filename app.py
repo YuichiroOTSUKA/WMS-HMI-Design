@@ -235,7 +235,6 @@ def dev_badge(abs_pct: float) -> str:
 GATE_SPEED_M_PER_MIN = 0.3          # spec
 K_TOL_PCT = 5.0                     # spec
 AUTO_FAIL_TIMEOUT_SEC = 60 * 60     # spec: stop after 1 hour if cannot achieve Ktarget
-MANUAL_STEP_SEC = 1.0               # demo: how often to apply continuous raise/down integration
 
 
 def clamp(v, lo, hi):
@@ -420,8 +419,7 @@ def init_state():
     if "prog_drive_minutes" not in ss:
         ss.prog_drive_minutes = 1.0
 
-    # --- Remote Manual (SPEC-ALIGNED): per-gate continuous command = RAISE/DOWN/STOP
-    # State is per gate key and applied continuously until STOP
+    # --- Remote Manual: per selected gate continuous command (RAISE/DOWN/STOP)
     if "manual_cmd" not in ss:
         ss.manual_cmd = {}  # { gate_key: "STOP"/"RAISE"/"DOWN" }
     if "manual_last_tick_ts" not in ss:
@@ -626,7 +624,7 @@ def apply_remote_automatic_if_running():
 
 
 # =========================================================
-# Remote Program logic (unchanged)
+# Remote Program logic (kept)
 # =========================================================
 def apply_remote_program_if_running():
     ss = st.session_state
@@ -649,8 +647,7 @@ def apply_remote_program_if_running():
         return
 
     if ss.program_mode == "GATE POSITION":
-        # Still kept here (Program mode can issue gate position instructions),
-        # but Remote Manual must NOT have %/m inputs per your instruction.
+        # Program mode may issue position instructions (not Remote Manual)
         if ss.prog_gate_pos_unit == "%":
             target_pct = int(clamp(round(ss.prog_gate_pos_value), 0, 100))
         else:
@@ -678,17 +675,15 @@ def apply_remote_program_if_running():
 
 
 # =========================================================
-# Remote Manual (SPEC-ALIGNED): continuous Raise/Down/Stop per selected gate
+# Remote Manual (SPEC-ALIGNED): continuous Raise/Down/Stop
 # =========================================================
 def manual_set_cmd(gate_key: str, cmd: str):
     # cmd: "RAISE" / "DOWN" / "STOP"
-    ss = st.session_state
-    ss.manual_cmd[gate_key] = cmd
+    st.session_state.manual_cmd[gate_key] = cmd
     send_cmd_to_gate(gate_key, f"REMOTE MANUAL {cmd}")
 
 
 def manual_force_stop_all(reason: str):
-    # Called when interlocks block control; stop everything
     ss = st.session_state
     for k in list(ss.manual_cmd.keys()):
         ss.manual_cmd[k] = "STOP"
@@ -698,7 +693,6 @@ def manual_force_stop_all(reason: str):
 def tick_remote_manual_motion():
     ss = st.session_state
 
-    # Remote Manual only meaningful when mode is REMOTE MANUAL
     if ss.mode != "REMOTE MANUAL":
         return
 
@@ -707,18 +701,14 @@ def tick_remote_manual_motion():
         manual_force_stop_all("SPC does not support Remote Manual")
         return
 
-    # Interlocks
+    # Interlocks / access
     if blocked():
         manual_force_stop_all("Blocked by interlock/access")
         return
 
     now = time.time()
     dt = max(0.0, now - ss.manual_last_tick_ts)
-    if dt <= 0:
-        return
-
-    # integrate at most a reasonable step, to avoid jumps after long pause
-    dt = min(dt, 2.0)
+    dt = min(dt, 2.0)  # avoid jump after long pause
     ss.manual_last_tick_ts = now
 
     gate_key = current_gate_key()
@@ -739,7 +729,7 @@ def tick_remote_manual_motion():
 
     gs["open_pct"] = opening_pct_from_m(new_m, max_m)
 
-    # Auto-stop at bounds (optional but practical)
+    # Auto-stop at bounds (practical safeguard)
     if new_m <= 0.0 and cmd == "DOWN":
         ss.manual_cmd[gate_key] = "STOP"
         send_cmd_to_gate(gate_key, "REMOTE MANUAL STOP (Lower limit)")
@@ -852,11 +842,11 @@ def overview_building_svg(
   <text x="{margin+200}" y="122" fill="{sub}" font-size="12" font-weight="900">Kact</text>
   <text x="{margin+200}" y="145" fill="{txt}" font-size="16" font-weight="900">{k_act:.2f}</text>
 
-  <text x="{margin+360}" y="122" fill="{sub}" font-size="12" font-weight="900">ΔK (pct-pt)</text>
+  <text x="{margin+360}" y="122" fill="{sub}" font-size="12" font-weight="900">ΔK</text>
   <text x="{margin+360}" y="145" fill="{txt}" font-size="16" font-weight="900">{dev_pct:+.1f}%</text>
 
-  <circle cx="{margin+540}" cy="136" r="8" fill="{k_color}" opacity="0.9"/>
-  <text x="{margin+555}" y="142" fill="{txt}" font-size="12" font-weight="900">{k_status} (±{K_TOL_PCT:.0f}%)</text>
+  <circle cx="{margin+520}" cy="136" r="8" fill="{k_color}" opacity="0.9"/>
+  <text x="{margin+535}" y="142" fill="{txt}" font-size="12" font-weight="900">{k_status} (±{K_TOL_PCT:.0f}%)</text>
 """
     )
 
@@ -978,7 +968,7 @@ st.sidebar.caption("Spec: SPC does not support Remote Manual Mode.")
 st.sidebar.markdown("---")
 
 allowed_modes = ["LOCAL (LCP ACTIVE)", "REMOTE AUTOMATIC", "REMOTE PROGRAM", "REMOTE MANUAL"]
-if gh_type == "SPC":
+if gh_type == "SPC" and "REMOTE MANUAL" in allowed_modes:
     allowed_modes.remove("REMOTE MANUAL")
 if st.session_state.mode not in allowed_modes:
     st.session_state.mode = "REMOTE AUTOMATIC"
@@ -1007,7 +997,7 @@ for k in list(st.session_state.prot.keys()):
 
 st.sidebar.markdown("### Gate House Plan (dummy)")
 gh = get_gh()
-gh["q_plan"] = round(st.sidebar.slider("Q_plan (Gate House) [m³/s]", 5.0, 20.0, float(gh["q_plan"]), 0.05), 2)
+gh["q_plan"] = round(st.sidebar.slider("Qplan (Gate House) [m³/s]", 5.0, 20.0, float(gh["q_plan"]), 0.05), 2)
 
 st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("Auto refresh (1s)", value=False)
@@ -1131,20 +1121,30 @@ if mode == "REMOTE PROGRAM":
     elif st.session_state.program_mode == "GATE POSITION":
         c1, c2 = st.columns([1, 1], gap="large")
         with c1:
-            st.session_state.prog_gate_pos_unit = st.selectbox("Unit", ["%", "cm"], index=["%", "cm"].index(st.session_state.prog_gate_pos_unit))
+            st.session_state.prog_gate_pos_unit = st.selectbox(
+                "Unit", ["%", "cm"], index=["%", "cm"].index(st.session_state.prog_gate_pos_unit)
+            )
         with c2:
             if st.session_state.prog_gate_pos_unit == "%":
-                st.session_state.prog_gate_pos_value = st.slider("Target Gate Position (%)", 0.0, 100.0, float(st.session_state.prog_gate_pos_value), 1.0)
+                st.session_state.prog_gate_pos_value = st.slider(
+                    "Target Gate Position (%)", 0.0, 100.0, float(st.session_state.prog_gate_pos_value), 1.0
+                )
             else:
-                st.session_state.prog_gate_pos_value = st.slider("Target Gate Position (cm)", 0.0, 200.0, float(st.session_state.prog_gate_pos_value), 1.0)
+                st.session_state.prog_gate_pos_value = st.slider(
+                    "Target Gate Position (cm)", 0.0, 200.0, float(st.session_state.prog_gate_pos_value), 1.0
+                )
         st.caption("Program mode may issue gate position instructions (spec).")
 
     else:
         c1, c2 = st.columns([1, 1], gap="large")
         with c1:
-            st.session_state.prog_drive_direction = st.selectbox("Direction", ["RAISE", "DOWN"], index=["RAISE", "DOWN"].index(st.session_state.prog_drive_direction))
+            st.session_state.prog_drive_direction = st.selectbox(
+                "Direction", ["RAISE", "DOWN"], index=["RAISE", "DOWN"].index(st.session_state.prog_drive_direction)
+            )
         with c2:
-            st.session_state.prog_drive_minutes = st.slider("Drive time (minutes)", 0.0, 10.0, float(st.session_state.prog_drive_minutes), 0.1)
+            st.session_state.prog_drive_minutes = st.slider(
+                "Drive time (minutes)", 0.0, 10.0, float(st.session_state.prog_drive_minutes), 0.1
+            )
         row("Gate speed", f"{GATE_SPEED_M_PER_MIN:.1f} m/min (spec)")
 
     bb1, bb2 = st.columns(2, gap="large")
@@ -1325,11 +1325,6 @@ def panel_alarms_and_logs():
     else:
         pill("NO ACTIVE TRIP", "hmi-pill hmi-ok")
 
-    for k, vv in st.session_state.prot.items():
-        row(k, "ON" if Rv := Rv else "OFF" , None, "hmi-bad" if Rv else "hmi-ok")  # noqa: F841
-    # The above line is intentionally avoided in production; to keep compatibility and clarity,
-    # we re-render properly below.
-    # Re-render correctly (overwrites the mistaken line visually):
     for k, v in st.session_state.prot.items():
         row(k, "ON" if v else "OFF", None, "hmi-bad" if v else "hmi-ok")
 
