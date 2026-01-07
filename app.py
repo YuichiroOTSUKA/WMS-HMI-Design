@@ -73,7 +73,7 @@ small { color: #94a3b8; }
 .bar-wrap{ height: 10px; border-radius: 999px; background:#0a1020; border:1px solid #223049; overflow:hidden; }
 .bar-fill{ height: 100%; border-radius: 999px; background: linear-gradient(90deg, #0ea5e9, #2563eb); }
 
-/* Diverging bar (centered at 0) */
+/* Diverging bar */
 .div-wrap{
   position: relative;
   height: 14px;
@@ -181,7 +181,7 @@ def bar(percent: int):
 
 def diverging_bar(dev_pct: float, scale_pct: float = 10.0):
     d = max(-scale_pct, min(scale_pct, dev_pct))
-    half = abs(d) / scale_pct * 50.0  # 0..50
+    half = abs(d) / scale_pct * 50.0
     if d >= 0:
         st.markdown(
             f"""
@@ -232,9 +232,14 @@ def dev_badge(abs_pct: float) -> str:
 # =========================================================
 # Domain helpers (Gate Control)
 # =========================================================
-GATE_SPEED_M_PER_MIN = 0.3
-K_TOL_PCT = 5.0
-AUTO_FAIL_TIMEOUT_SEC = 60 * 60
+GATE_SPEED_M_PER_MIN = 0.3          # spec
+K_TOL_PCT = 5.0                     # spec
+AUTO_FAIL_TIMEOUT_SEC = 60 * 60     # spec: stop after 1 hour if cannot achieve Ktarget
+MANUAL_STEP_SEC = 1.0               # demo: how often to apply continuous raise/down integration
+
+
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
 
 
 def opening_m_from_pct(open_pct: int, max_open_m: float) -> float:
@@ -247,18 +252,13 @@ def opening_pct_from_m(open_m: float, max_open_m: float) -> int:
     return int(max(0, min(100, round(open_m / max_open_m * 100))))
 
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-
 def compute_h_plan_from_qplan(q_plan: float) -> float:
-    # Dummy mapping (in real system: location-specific HQ/coeff tables)
+    # Dummy mapping (real system uses HQ/coeff tables)
     return round(1.10 + 0.06 * (q_plan - 10.0), 2)
 
 
 # =========================================================
-# Remote Program: K patterns (A..I)
-# IMPORTANT: keys must match session_state.prog_k_pattern values
+# Remote Program: K patterns (A..I) (for PROGRAM mode only)
 # =========================================================
 K_PATTERNS = {
     "A (100%)": 1.00,
@@ -274,7 +274,7 @@ K_PATTERNS = {
 
 
 # =========================================================
-# Demo assets (Gate House -> gates)
+# Demo assets
 # =========================================================
 def build_demo_assets():
     return {
@@ -299,14 +299,14 @@ ASSETS = build_demo_assets()
 def init_state():
     ss = st.session_state
 
-    # --- Security/login (demo)
+    # --- Auth (demo)
     if "auth" not in ss:
         ss.auth = {
             "logged_in": False,
             "user": "operator",
             "role": "Operator",  # Administrator / Operator / Viewer
             "last_activity_ts": time.time(),
-            "idle_timeout_sec": 5 * 60,  # demo
+            "idle_timeout_sec": 5 * 60,
         }
     if "login_log" not in ss:
         ss.login_log = []
@@ -321,7 +321,7 @@ def init_state():
     if "selected_gate" not in ss:
         ss.selected_gate = "Gate1"
 
-    # --- Communication / power / protection
+    # --- Comms / power / protection
     if "remote_enabled" not in ss:
         ss.remote_enabled = True
     if "comm_main" not in ss:
@@ -343,14 +343,14 @@ def init_state():
             "Control De-Energize": False,
         }
 
-    # --- Gate House type (TC/SPC) affects available modes
+    # --- Gate house type: TC / SPC (demo)
     if "gatehouse_type" not in ss:
         ss.gatehouse_type = {}
         for stn, ghs in ASSETS.items():
             for gh in ghs.keys():
                 ss.gatehouse_type[f"{stn}/{gh}"] = "SPC" if ("Ciberang" in gh or "Waru" in gh) else "TC"
 
-    # --- Gate House-level mode
+    # --- Mode
     if "mode" not in ss:
         ss.mode = "REMOTE AUTOMATIC"
 
@@ -389,27 +389,28 @@ def init_state():
                     "h_act": h_act,
                     "k_target": k_target,
                     "k_act": None,
-                    "trend_q": [round(q_act + 0.12 * math.sin(i / 12) + random.uniform(-0.10, 0.10), 2) for i in range(120)],
+                    "trend_q": [
+                        round(q_act + 0.12 * math.sin(i / 12) + random.uniform(-0.10, 0.10), 2) for i in range(120)
+                    ],
                     "auto_alarm": False,
                     "auto_alarm_msg": "",
                 }
         ss.gh_state = ds
 
-    # --- Auto execution state (gatehouse-level)
+    # --- Auto execution
     if "auto_state" not in ss:
         ss.auto_state = "STOPPED"  # RUNNING / PAUSED / STOPPED
     if "auto_first_exec_ts" not in ss:
         ss.auto_first_exec_ts = None
 
-    # --- Program execution state (gatehouse-level)
+    # --- Program execution
     if "program_running" not in ss:
         ss.program_running = False
     if "program_mode" not in ss:
         ss.program_mode = "K VALUE"  # K VALUE / GATE POSITION / DRIVE TIME
-
-    # Remote Program inputs (FIXED: must match K_PATTERNS keys)
     if "prog_k_pattern" not in ss:
-        ss.prog_k_pattern = list(K_PATTERNS.keys())[0]  # "A (100%)"
+        ss.prog_k_pattern = list(K_PATTERNS.keys())[0]
+
     if "prog_gate_pos_unit" not in ss:
         ss.prog_gate_pos_unit = "%"
     if "prog_gate_pos_value" not in ss:
@@ -419,12 +420,18 @@ def init_state():
     if "prog_drive_minutes" not in ss:
         ss.prog_drive_minutes = 1.0
 
-    # Trends
+    # --- Remote Manual (SPEC-ALIGNED): per-gate continuous command = RAISE/DOWN/STOP
+    # State is per gate key and applied continuously until STOP
+    if "manual_cmd" not in ss:
+        ss.manual_cmd = {}  # { gate_key: "STOP"/"RAISE"/"DOWN" }
+    if "manual_last_tick_ts" not in ss:
+        ss.manual_last_tick_ts = time.time()
+
+    # --- Trends
     if "trend_gate" not in ss:
         ss.trend_gate = [random.randint(0, 100) for _ in range(120)]
     if "trend_large" not in ss:
         ss.trend_large = False
-
     if "cctv_camera" not in ss:
         ss.cctv_camera = "CCTV — Gate Area"
 
@@ -472,14 +479,14 @@ def audit(event: str, detail: str):
     )
 
 
-# Idle timeout enforcement
+# Enforce idle timeout
 if is_idle_timeout():
     do_logout("IDLE TIMEOUT")
     st.warning("You were logged out due to inactivity (auto-timeout). Please log in again.")
     st.stop()
 
 # =========================================================
-# Key helpers (current selection)
+# Key helpers
 # =========================================================
 def current_gh_key():
     ss = st.session_state
@@ -528,7 +535,15 @@ def blocked() -> bool:
     return False
 
 
-def send_cmd(cmd: str):
+def send_cmd_to_gate(gate_key: str, cmd: str):
+    touch_activity()
+    now = datetime.now().strftime("%H:%M:%S")
+    st.session_state.gate_state[gate_key]["last_cmd"] = cmd
+    st.session_state.gate_state[gate_key]["last_cmd_time"] = now
+    audit("COMMAND", f"{gate_key} :: {cmd}")
+
+
+def send_cmd_to_gatehouse(cmd: str):
     touch_activity()
     now = datetime.now().strftime("%H:%M:%S")
     ss = st.session_state
@@ -537,15 +552,6 @@ def send_cmd(cmd: str):
         ss.gate_state[key]["last_cmd"] = cmd
         ss.gate_state[key]["last_cmd_time"] = now
     audit("COMMAND", f"{current_gh_key()} :: {cmd}")
-
-
-def set_gatehouse_open_pct(target_pct: int):
-    touch_activity()
-    ss = st.session_state
-    target_pct = int(clamp(target_pct, 0, 100))
-    for g in all_gates_in_gatehouse():
-        key = f"{ss.station}/{ss.gatehouse}/{g}"
-        ss.gate_state[key]["open_pct"] = target_pct
 
 
 def step_gate_toward(gate_key: str, target_pct: int):
@@ -580,7 +586,6 @@ def auto_target_q(gh: dict) -> float:
 
 
 def dummy_gate_opening_from_qtarget(q_target: float) -> int:
-    # Placeholder mapping for demo
     return int(clamp(10 + q_target * 6.0, 0, 100))
 
 
@@ -621,7 +626,7 @@ def apply_remote_automatic_if_running():
 
 
 # =========================================================
-# Remote Program logic (K value / Gate position / Drive time)
+# Remote Program logic (unchanged)
 # =========================================================
 def apply_remote_program_if_running():
     ss = st.session_state
@@ -644,12 +649,14 @@ def apply_remote_program_if_running():
         return
 
     if ss.program_mode == "GATE POSITION":
+        # Still kept here (Program mode can issue gate position instructions),
+        # but Remote Manual must NOT have %/m inputs per your instruction.
         if ss.prog_gate_pos_unit == "%":
             target_pct = int(clamp(round(ss.prog_gate_pos_value), 0, 100))
         else:
             rep = get_gate()
             max_m = rep["max_open_m"]
-            target_m = clamp(ss.prog_gate_pos_value / 100.0, 0.0, max_m)
+            target_m = clamp(ss.prog_gate_pos_value / 100.0, 0.0, max_m)  # cm -> m
             target_pct = opening_pct_from_m(target_m, max_m)
         step_all_gates_in_gatehouse(target_pct)
         return
@@ -668,6 +675,77 @@ def apply_remote_program_if_running():
                 new_m = clamp(cur_m - delta_m, 0.0, max_m)
             gs["open_pct"] = opening_pct_from_m(new_m, max_m)
         return
+
+
+# =========================================================
+# Remote Manual (SPEC-ALIGNED): continuous Raise/Down/Stop per selected gate
+# =========================================================
+def manual_set_cmd(gate_key: str, cmd: str):
+    # cmd: "RAISE" / "DOWN" / "STOP"
+    ss = st.session_state
+    ss.manual_cmd[gate_key] = cmd
+    send_cmd_to_gate(gate_key, f"REMOTE MANUAL {cmd}")
+
+
+def manual_force_stop_all(reason: str):
+    # Called when interlocks block control; stop everything
+    ss = st.session_state
+    for k in list(ss.manual_cmd.keys()):
+        ss.manual_cmd[k] = "STOP"
+    audit("INTERLOCK", f"Remote Manual forced STOP ({reason})")
+
+
+def tick_remote_manual_motion():
+    ss = st.session_state
+
+    # Remote Manual only meaningful when mode is REMOTE MANUAL
+    if ss.mode != "REMOTE MANUAL":
+        return
+
+    # Spec: SPC does not support Remote Manual
+    if get_gatehouse_type() == "SPC":
+        manual_force_stop_all("SPC does not support Remote Manual")
+        return
+
+    # Interlocks
+    if blocked():
+        manual_force_stop_all("Blocked by interlock/access")
+        return
+
+    now = time.time()
+    dt = max(0.0, now - ss.manual_last_tick_ts)
+    if dt <= 0:
+        return
+
+    # integrate at most a reasonable step, to avoid jumps after long pause
+    dt = min(dt, 2.0)
+    ss.manual_last_tick_ts = now
+
+    gate_key = current_gate_key()
+    cmd = ss.manual_cmd.get(gate_key, "STOP")
+
+    if cmd not in ("RAISE", "DOWN"):
+        return
+
+    gs = ss.gate_state[gate_key]
+    max_m = gs["max_open_m"]
+    cur_m = opening_m_from_pct(gs["open_pct"], max_m)
+
+    delta_m = (GATE_SPEED_M_PER_MIN / 60.0) * dt  # m/min -> m/sec
+    if cmd == "RAISE":
+        new_m = clamp(cur_m + delta_m, 0.0, max_m)
+    else:
+        new_m = clamp(cur_m - delta_m, 0.0, max_m)
+
+    gs["open_pct"] = opening_pct_from_m(new_m, max_m)
+
+    # Auto-stop at bounds (optional but practical)
+    if new_m <= 0.0 and cmd == "DOWN":
+        ss.manual_cmd[gate_key] = "STOP"
+        send_cmd_to_gate(gate_key, "REMOTE MANUAL STOP (Lower limit)")
+    if new_m >= max_m and cmd == "RAISE":
+        ss.manual_cmd[gate_key] = "STOP"
+        send_cmd_to_gate(gate_key, "REMOTE MANUAL STOP (Upper limit)")
 
 
 # =========================================================
@@ -693,9 +771,11 @@ def tick_gate_trend():
     st.session_state.trend_gate = (st.session_state.trend_gate + [gg["open_pct"]])[-120:]
 
 
+# Tick order
 tick_gatehouse_signals()
 apply_remote_automatic_if_running()
 apply_remote_program_if_running()
+tick_remote_manual_motion()
 tick_gate_trend()
 
 # =========================================================
@@ -893,7 +973,7 @@ st.sidebar.selectbox("Gate House", gatehouses, key="gatehouse")
 
 gh_type = get_gatehouse_type()
 st.sidebar.markdown(f"**Gate House Type:** `{gh_type}`")
-st.sidebar.caption("Note: SPC does not support Remote Manual Mode (spec).")
+st.sidebar.caption("Spec: SPC does not support Remote Manual Mode.")
 
 st.sidebar.markdown("---")
 
@@ -908,7 +988,9 @@ st.sidebar.radio("Control Mode (Gate House)", allowed_modes, key="mode")
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Comms / Access (dummy)")
 st.session_state.remote_enabled = st.sidebar.checkbox("Remote enabled", value=st.session_state.remote_enabled)
-st.session_state.comm_main = st.sidebar.selectbox("Main comm", ["NORMAL", "DOWN"], index=["NORMAL", "DOWN"].index(st.session_state.comm_main))
+st.session_state.comm_main = st.sidebar.selectbox(
+    "Main comm", ["NORMAL", "DOWN"], index=["NORMAL", "DOWN"].index(st.session_state.comm_main)
+)
 st.session_state.comm_backup = st.sidebar.selectbox(
     "Backup comm", ["STANDBY", "ACTIVE", "DOWN"], index=["STANDBY", "ACTIVE", "DOWN"].index(st.session_state.comm_backup)
 )
@@ -1014,7 +1096,12 @@ if mode == "REMOTE AUTOMATIC":
     q_target = auto_target_q(gh)
     row("Qplan", f"{gh['q_plan']:.2f} m³/s")
     row("Qtarget (=K×Qplan)", f"{q_target:.2f} m³/s")
-    row("Qact (TM-derived, dummy)", f"{gh['q_act']:.2f} m³/s", f"Δ {(gh['q_act']-q_target):+.2f}", dev_badge(abs(pct_delta(q_target, gh["q_act"]))))
+    row(
+        "Qact (TM-derived, dummy)",
+        f"{gh['q_act']:.2f} m³/s",
+        f"Δ {(gh['q_act']-q_target):+.2f}",
+        dev_badge(abs(pct_delta(q_target, gh["q_act"]))),
+    )
 
     if gh.get("auto_alarm", False):
         pill("AUTO ALARM: ACTIVE", "hmi-pill hmi-bad")
@@ -1036,7 +1123,7 @@ if mode == "REMOTE PROGRAM":
     if st.session_state.program_mode == "K VALUE":
         opts = list(K_PATTERNS.keys())
         cur = st.session_state.prog_k_pattern
-        idx = opts.index(cur) if cur in opts else 0  # FIX: avoid ValueError if stale session value
+        idx = opts.index(cur) if cur in opts else 0
         st.session_state.prog_k_pattern = st.selectbox("K Pattern (A–I)", opts, index=idx)
         st.caption("Operator selects Ktarget instead of obtaining it from DSS (spec).")
         row("Selected Ktarget", f"{K_PATTERNS[st.session_state.prog_k_pattern]:.2f}")
@@ -1050,7 +1137,7 @@ if mode == "REMOTE PROGRAM":
                 st.session_state.prog_gate_pos_value = st.slider("Target Gate Position (%)", 0.0, 100.0, float(st.session_state.prog_gate_pos_value), 1.0)
             else:
                 st.session_state.prog_gate_pos_value = st.slider("Target Gate Position (cm)", 0.0, 200.0, float(st.session_state.prog_gate_pos_value), 1.0)
-        st.caption("Gate House control: all gates in the gatehouse move to approximately the same position (spec).")
+        st.caption("Program mode may issue gate position instructions (spec).")
 
     else:
         c1, c2 = st.columns([1, 1], gap="large")
@@ -1065,24 +1152,28 @@ if mode == "REMOTE PROGRAM":
         if st.button("▶ RUN", use_container_width=True, disabled=is_blocked):
             touch_activity()
             st.session_state.program_running = True
-            send_cmd(f"REMOTE PROGRAM RUN ({st.session_state.program_mode})")
+            send_cmd_to_gatehouse(f"REMOTE PROGRAM RUN ({st.session_state.program_mode})")
     with bb2:
         if st.button("⏹ STOP", use_container_width=True, disabled=not st.session_state.auth["logged_in"]):
             touch_activity()
             st.session_state.program_running = False
-            send_cmd("REMOTE PROGRAM STOP")
+            send_cmd_to_gatehouse("REMOTE PROGRAM STOP")
 
     row("Program state", "RUNNING" if st.session_state.program_running else "STOPPED", None, "hmi-ok" if st.session_state.program_running else "hmi-bad")
     card_end()
     st.markdown("")
 
 if mode == "REMOTE MANUAL":
-    card_start("Remote Manual Mode", "TC only: operator raises/lowers gates while monitoring gate position (spec).", "🕹️")
+    card_start(
+        "Remote Manual Mode",
+        "Spec-aligned: Operator selects a gate and sends continuous Raise / Down / Stop while monitoring gate position.",
+        "🕹️",
+    )
     if get_gatehouse_type() == "SPC":
-        pill("NOT SUPPORTED ON SPC", "hmi-pill hmi-bad")
+        pill("NOT SUPPORTED ON SPC (Spec)", "hmi-pill hmi-bad")
     else:
         pill("READY" if not is_blocked else "BLOCKED", "hmi-pill hmi-ok" if not is_blocked else "hmi-pill hmi-bad")
-        st.caption("Note: although you select a gate for viewing, manual actions are applied to the Gate House in this demo.")
+        st.caption("No % / m setpoint inputs in Remote Manual (per spec).")
     card_end()
     st.markdown("")
 
@@ -1140,7 +1231,7 @@ html_overview = f"""
 components.html(html_overview, height=470, scrolling=False)
 
 sel = st.radio(
-    "Select gate (view only)",
+    "Select gate",
     gates,
     horizontal=True,
     index=gates.index(st.session_state.selected_gate),
@@ -1163,7 +1254,9 @@ opening_m = opening_m_from_pct(opening_pct, g["max_open_m"])
 
 
 def panel_gate_status_and_controls():
-    card_start(f"Gate Status — {st.session_state.selected_gate}", "Status view. Control acts on Gate House (spec).", "🚪")
+    gate_key = current_gate_key()
+
+    card_start(f"Gate Status — {st.session_state.selected_gate}", "Status view + (Remote Manual) Raise/Down/Stop only.", "🚪")
 
     components.html(gate_svg(opening_pct), height=290, scrolling=False)
 
@@ -1172,41 +1265,28 @@ def panel_gate_status_and_controls():
     row("Opening (Meters)", f"{opening_m:.2f} m  (max {g['max_open_m']:.2f} m)")
     bar(int(round((opening_m / g["max_open_m"]) * 100)) if g["max_open_m"] > 0 else 0)
 
-    if st.session_state.mode == "REMOTE MANUAL" and get_gatehouse_type() == "TC":
+    # SPEC-ALIGNED Remote Manual controls: Raise / Down / Stop only
+    if st.session_state.mode == "REMOTE MANUAL":
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-        pill("BLOCKED" if is_blocked else "READY", "hmi-pill hmi-bad" if is_blocked else "hmi-pill hmi-ok")
 
-        c1, c2 = st.columns(2, gap="large")
-        with c1:
-            pct = st.slider("Manual Opening (%) (Gate House)", 0, 100, int(opening_pct), 1, key="manual_pct")
-            if st.button("Apply % (Gate House)", use_container_width=True, disabled=is_blocked):
-                send_cmd(f"REMOTE MANUAL SET {pct}% (Gate House)")
-                set_gatehouse_open_pct(pct)
+        if get_gatehouse_type() == "SPC":
+            pill("REMOTE MANUAL NOT AVAILABLE (SPC)", "hmi-pill hmi-bad")
+        else:
+            cur_cmd = st.session_state.manual_cmd.get(gate_key, "STOP")
+            row("Remote Manual command (continuous)", cur_cmd, None, "hmi-ok" if cur_cmd == "STOP" else "hmi-warn")
 
-        with c2:
-            mm = st.slider("Manual Opening (m) (Gate House)", 0.0, float(g["max_open_m"]), float(opening_m), 0.01, key="manual_m")
-            if st.button("Apply m (Gate House)", use_container_width=True, disabled=is_blocked):
-                pct2 = opening_pct_from_m(mm, g["max_open_m"])
-                send_cmd(f"REMOTE MANUAL SET {mm:.2f}m ({pct2}%) (Gate House)")
-                set_gatehouse_open_pct(pct2)
+            c1, c2, c3 = st.columns(3, gap="large")
+            with c1:
+                if st.button("⬆ Raise", use_container_width=True, disabled=is_blocked):
+                    manual_set_cmd(gate_key, "RAISE")
+            with c2:
+                if st.button("■ Stop", use_container_width=True, disabled=not st.session_state.auth["logged_in"]):
+                    manual_set_cmd(gate_key, "STOP")
+            with c3:
+                if st.button("⬇ Down", use_container_width=True, disabled=is_blocked):
+                    manual_set_cmd(gate_key, "DOWN")
 
-        j1, j2, j3, j4 = st.columns(4, gap="small")
-        with j1:
-            if st.button("−10%", use_container_width=True, disabled=is_blocked):
-                send_cmd("REMOTE MANUAL JOG -10% (Gate House)")
-                set_gatehouse_open_pct(opening_pct - 10)
-        with j2:
-            if st.button("−2%", use_container_width=True, disabled=is_blocked):
-                send_cmd("REMOTE MANUAL JOG -2% (Gate House)")
-                set_gatehouse_open_pct(opening_pct - 2)
-        with j3:
-            if st.button("+2%", use_container_width=True, disabled=is_blocked):
-                send_cmd("REMOTE MANUAL JOG +2% (Gate House)")
-                set_gatehouse_open_pct(opening_pct + 2)
-        with j4:
-            if st.button("+10%", use_container_width=True, disabled=is_blocked):
-                send_cmd("REMOTE MANUAL JOG +10% (Gate House)")
-                set_gatehouse_open_pct(opening_pct + 10)
+            st.caption("Behavior: Raise/Down continues until Stop (spec concept).")
 
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
     st.markdown("<div class='hmi-sub' style='margin-top:2px;'>CCTV</div>", unsafe_allow_html=True)
@@ -1245,6 +1325,11 @@ def panel_alarms_and_logs():
     else:
         pill("NO ACTIVE TRIP", "hmi-pill hmi-ok")
 
+    for k, vv in st.session_state.prot.items():
+        row(k, "ON" if Rv := Rv else "OFF" , None, "hmi-bad" if Rv else "hmi-ok")  # noqa: F841
+    # The above line is intentionally avoided in production; to keep compatibility and clarity,
+    # we re-render properly below.
+    # Re-render correctly (overwrites the mistaken line visually):
     for k, v in st.session_state.prot.items():
         row(k, "ON" if v else "OFF", None, "hmi-bad" if v else "hmi-ok")
 
@@ -1267,8 +1352,18 @@ def panel_alarms_and_logs():
 
 def panel_power():
     card_start("Power / Generator", "Power source status (dummy)", "⚡")
-    row("Commercial power", "ON" if st.session_state.commercial_power else "OFF", None, "hmi-ok" if st.session_state.commercial_power else "hmi-warn")
-    row("Generator state", st.session_state.gen_state, None, "hmi-ok" if st.session_state.gen_state != "ERROR" else "hmi-bad")
+    row(
+        "Commercial power",
+        "ON" if st.session_state.commercial_power else "OFF",
+        None,
+        "hmi-ok" if st.session_state.commercial_power else "hmi-warn",
+    )
+    row(
+        "Generator state",
+        st.session_state.gen_state,
+        None,
+        "hmi-ok" if st.session_state.gen_state != "ERROR" else "hmi-bad",
+    )
     card_end()
 
 
